@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MotionFlow Composition</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+    </style>
+    <!-- TIME HIJACK: Must run BEFORE any other scripts.
+         Overrides performance.now() to return virtual time controlled by
+         the parent studio window (via postMessage) or Playwright (via page.evaluate).
+         rAF is left untouched so Framer Motion's animation loop fires naturally
+         in studio mode. Playwright's page.clock controls rAF in render mode. -->
+    <script>
+      (function() {
+        var _origNow = performance.now.bind(performance);
+        // __motionFlowOverride is set synchronously before React setState,
+        // ensuring Framer Motion reads the correct virtual time on the next rAF tick.
+        Object.defineProperty(performance, 'now', {
+          configurable: true,
+          get: function() {
+            return function() {
+              var override = performance.__motionFlowOverride;
+              return (override !== undefined && override !== null) ? override : _origNow();
+            };
+          }
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/studio/compositionEntry.tsx"></script>
+  </body>
+</html>

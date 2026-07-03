@@ -1,0 +1,35 @@
+{
+  "name": "motionflow",
+  "version": "0.1.0",
+  "description": "Framer Motion-native programmatic video engine",
+  "type": "module",
+  "bin": {
+    "motionflow": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "studio": "tsx src/cli/index.ts studio",
+    "render": "tsx src/cli/index.ts render",
+    "build": "vite build && tsc -p tsconfig.node.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "framer-motion": "^11.3.0",
+    "commander": "^12.1.0",
+    "ffmpeg-static": "^5.2.0",
+    "sharp": "^0.33.4",
+    "playwright": "^1.45.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.4",
+    "typescript": "^5.5.3",
+    "tsx": "^4.16.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/node": "^22.0.0",
+    "@types/ffmpeg-static": "^3.0.1"
+  }
+}

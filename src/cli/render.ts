@@ -190,9 +190,23 @@ export async function render(
 
   const boundPort = vite.config.server.port ?? port;
   log(`  Dev server running on port ${boundPort}...`);
-
+ 
   const mode = options.mode ?? 'auto';
-  const codec = detectGpuCodec(ffmpegStatic ?? 'ffmpeg', mode);
+ 
+  // Resolve which FFmpeg binary to use (preferring global system ffmpeg if it supports the requested GPU codec)
+  let ffmpegPath = ffmpegStatic ?? 'ffmpeg';
+  const tempCodec = detectGpuCodec(ffmpegPath, mode);
+ 
+  if (tempCodec !== 'libx264') {
+    try {
+      const output = execSync('ffmpeg -encoders', { encoding: 'utf8' });
+      if (output.includes(tempCodec)) {
+        ffmpegPath = 'ffmpeg';
+      }
+    } catch {}
+  }
+ 
+  const codec = detectGpuCodec(ffmpegPath, mode);
   const useGpu = codec !== 'libx264';
  
   // 2. Launch Playwright
@@ -296,7 +310,7 @@ export async function render(
       ?? path.join(ROOT, 'out', `${compositionId}.mp4`);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
  
-    if (!ffmpegStatic) throw new Error('ffmpeg-static not found');
+    if (!ffmpegPath) throw new Error('FFmpeg not found');
     const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
  
     if (isStreamMode) {
@@ -353,7 +367,7 @@ export async function render(
           outputPath
         );
  
-        const proc = spawn(ffmpegStatic ?? 'ffmpeg', args, { stdio: 'ignore' });
+        const proc = spawn(ffmpegPath, args, { stdio: 'ignore' });
         proc.on('close', (code) => {
           if (code === 0) resolve();
           else reject(new Error(`FFmpeg merge exited with code ${code}`));
@@ -384,7 +398,7 @@ export async function render(
       await page.waitForFunction(() => !!(globalThis as any).__MOTIONFLOW_READY__, { timeout: 15000 });
  
       // Spawn ffmpeg subprocess
-      const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, codec, audioSourcePath);
+      const ffmpegProc = spawnFfmpeg(ffmpegPath, meta.width, meta.height, meta.fps, outputPath, codec, audioSourcePath);
       const ffmpegDone = new Promise<void>((resolve, reject) => {
         ffmpegProc.on('close', (code) => {
           if (code === 0) resolve();

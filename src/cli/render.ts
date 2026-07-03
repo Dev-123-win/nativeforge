@@ -52,7 +52,7 @@ async function getViteServer(port: number): Promise<ViteDevServer> {
 
 function supportsEncoder(ffmpegPath: string, encoder: string): boolean {
   try {
-    const output = execSync(`"${ffmpegPath}" -encoders`, { encoding: 'utf8' });
+    const output = execSync(`"${ffmpegPath}" -encoders`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     return output.includes(encoder);
   } catch {
     return false;

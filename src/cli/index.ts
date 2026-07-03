@@ -32,6 +32,7 @@ program
   .description('Render a composition to MP4')
   .option('--props <json>', 'Override default props as a JSON string')
   .option('--output <path>', 'Output file path (default: out/<id>.mp4)')
+  .option('--mode <mode>', 'Rendering mode: cpu, gpu, auto', 'auto')
   .option('--batch <dataFile>', 'Batch render from a JSON array of props')
   .option(
     '--concurrency <n>',
@@ -46,7 +47,7 @@ program
     } else {
       // Single render
       const { render } = await import('./render.js');
-
+ 
       let propsOverride: Record<string, unknown> | undefined;
       if (opts.props) {
         try {
@@ -56,8 +57,11 @@ program
           process.exit(1);
         }
       }
-
-      await render(compositionId, propsOverride, { output: opts.output });
+ 
+      await render(compositionId, propsOverride, { 
+        output: opts.output,
+        mode: opts.mode as 'cpu' | 'gpu' | 'auto'
+      });
     }
   });
 

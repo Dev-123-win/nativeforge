@@ -17,19 +17,20 @@
 import { chromium, type Browser, type Page } from 'playwright';
 import sharp from 'sharp';
 import ffmpegStatic from 'ffmpeg-static';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import { createServer, type ViteDevServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
+ 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../');
-
+ 
 export interface RenderOptions {
   output?: string;
   port?: number;
   quiet?: boolean;
+  mode?: 'cpu' | 'gpu' | 'auto';
 }
 
 interface CompositionInfo {
@@ -49,12 +50,52 @@ async function getViteServer(port: number): Promise<ViteDevServer> {
   return vite;
 }
 
+function detectGpuCodec(mode: 'cpu' | 'gpu' | 'auto'): string {
+  if (mode === 'cpu') return 'libx264';
+
+  // Heuristic 1: Check for NVIDIA GPU via nvidia-smi
+  let hasNvidia = false;
+  try {
+    execSync('nvidia-smi', { stdio: 'ignore' });
+    hasNvidia = true;
+  } catch {}
+
+  if (hasNvidia) return 'h264_nvenc';
+
+  // Heuristic 2: Check for macOS Apple Silicon (Videotoolbox)
+  if (process.platform === 'darwin') {
+    if (process.arch === 'arm64') {
+      return 'h264_videotoolbox';
+    }
+  }
+
+  // Heuristic 3: Check for Intel/AMD graphics on Windows
+  if (process.platform === 'win32') {
+    try {
+      const output = execSync('wmic path win32_VideoController get name', { encoding: 'utf8' }).toLowerCase();
+      if (output.includes('intel')) {
+        return 'h264_qsv';
+      }
+      if (output.includes('amd') || output.includes('radeon')) {
+        return 'h264_amf';
+      }
+    } catch {}
+  }
+
+  if (mode === 'gpu') {
+    console.warn(`  ⚠️  GPU mode requested, but no supported GPU (NVIDIA NVENC, Intel QSV, AMD AMF, or Apple Silicon) was detected. Falling back to CPU.`);
+  }
+
+  return 'libx264';
+}
+
 function spawnFfmpeg(
   ffmpegPath: string,
   width: number,
   height: number,
   fps: number,
   outputPath: string,
+  codec: string,
   audioSourcePath?: string
 ): ChildProcess {
   const args = [
@@ -73,10 +114,22 @@ function spawnFfmpeg(
   }
 
   args.push(
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-preset', 'ultrafast',
-    '-crf', '18',
+    '-c:v', codec,
+    '-pix_fmt', 'yuv420p'
+  );
+
+  // Set codec-specific presets and quality targets
+  if (codec === 'libx264') {
+    args.push('-preset', 'ultrafast', '-crf', '18');
+  } else if (codec === 'h264_nvenc') {
+    args.push('-preset', 'p3', '-cq', '20'); // nvenc constant quality
+  } else if (codec === 'h264_videotoolbox') {
+    args.push('-preset', 'slow', '-q:v', '65'); // videotoolbox quality target
+  } else {
+    args.push('-preset', 'fast');
+  }
+
+  args.push(
     '-movflags', '+faststart',
     '-shortest',
     '-y',
@@ -121,9 +174,37 @@ export async function render(
   const boundPort = vite.config.server.port ?? port;
   log(`  Dev server running on port ${boundPort}...`);
 
+  const mode = options.mode ?? 'auto';
+  const codec = detectGpuCodec(mode);
+  const useGpu = codec !== 'libx264';
+ 
   // 2. Launch Playwright
-  log(`  Launching headless Chromium...`);
-  const browser: Browser = await chromium.launch({ headless: true });
+  log(`  Launching headless Chromium (${useGpu ? 'GPU Accelerated' : 'CPU Software GL'})...`);
+  log(`  Encoder:    ${codec} (${useGpu ? 'GPU hardware-accelerated' : 'CPU software-based'})`);
+ 
+  const launchArgs = [
+    '--disable-web-security',
+    '--allow-running-insecure-content',
+  ];
+ 
+  if (useGpu) {
+    launchArgs.push(
+      '--enable-gpu',
+      '--use-gl=desktop',
+      '--ignore-gpu-blocklist',
+      '--disable-software-rasterizer'
+    );
+  } else {
+    launchArgs.push(
+      '--disable-gpu',
+      '--disable-software-rasterizer'
+    );
+  }
+ 
+  const browser: Browser = await chromium.launch({
+    headless: true,
+    args: launchArgs
+  });
 
   try {
     // 3. Navigate to composition page to read metadata
@@ -191,9 +272,9 @@ export async function render(
 
     if (!ffmpegStatic) throw new Error('ffmpeg-static not found');
 
-    // 6. Spawn ffmpeg subprocess (merging original audio track)
+    // 6. Spawn ffmpeg subprocess (merging original audio track & setting encoder)
     const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
-    const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, audioSourcePath);
+    const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, codec, audioSourcePath);
     const ffmpegDone = new Promise<void>((resolve, reject) => {
       ffmpegProc.on('close', (code) => {
         if (code === 0) resolve();

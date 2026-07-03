@@ -50,40 +50,57 @@ async function getViteServer(port: number): Promise<ViteDevServer> {
   return vite;
 }
 
-function detectGpuCodec(mode: 'cpu' | 'gpu' | 'auto'): string {
+function supportsEncoder(ffmpegPath: string, encoder: string): boolean {
+  try {
+    const output = execSync(`"${ffmpegPath}" -encoders`, { encoding: 'utf8' });
+    return output.includes(encoder);
+  } catch {
+    return false;
+  }
+}
+
+function detectGpuCodec(ffmpegPath: string, mode: 'cpu' | 'gpu' | 'auto'): string {
   if (mode === 'cpu') return 'libx264';
 
-  // Heuristic 1: Check for NVIDIA GPU via nvidia-smi
+  // Heuristic 1: Check for NVIDIA GPU via nvidia-smi and verify FFmpeg supports it
   let hasNvidia = false;
   try {
     execSync('nvidia-smi', { stdio: 'ignore' });
     hasNvidia = true;
   } catch {}
 
-  if (hasNvidia) return 'h264_nvenc';
+  if (hasNvidia && supportsEncoder(ffmpegPath, 'h264_nvenc')) {
+    return 'h264_nvenc';
+  }
 
-  // Heuristic 2: Check for macOS Apple Silicon (Videotoolbox)
-  if (process.platform === 'darwin') {
-    if (process.arch === 'arm64') {
+  // Heuristic 2: Check for macOS Apple Silicon and verify Videotoolbox supports it
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    if (supportsEncoder(ffmpegPath, 'h264_videotoolbox')) {
       return 'h264_videotoolbox';
     }
   }
 
-  // Heuristic 3: Check for Intel/AMD graphics on Windows
+  // Heuristic 3: Check for Intel/AMD graphics on Windows and verify support
   if (process.platform === 'win32') {
     try {
       const output = execSync('wmic path win32_VideoController get name', { encoding: 'utf8' }).toLowerCase();
-      if (output.includes('intel')) {
+      if (output.includes('intel') && supportsEncoder(ffmpegPath, 'h264_qsv')) {
         return 'h264_qsv';
       }
-      if (output.includes('amd') || output.includes('radeon')) {
+      if ((output.includes('amd') || output.includes('radeon')) && supportsEncoder(ffmpegPath, 'h264_amf')) {
         return 'h264_amf';
       }
     } catch {}
   }
 
+  // Fallback checks: even if heuristics failed, check if the system FFmpeg binary itself supports any GPU encoder
   if (mode === 'gpu') {
-    console.warn(`  ⚠️  GPU mode requested, but no supported GPU (NVIDIA NVENC, Intel QSV, AMD AMF, or Apple Silicon) was detected. Falling back to CPU.`);
+    if (supportsEncoder(ffmpegPath, 'h264_nvenc')) return 'h264_nvenc';
+    if (supportsEncoder(ffmpegPath, 'h264_qsv')) return 'h264_qsv';
+    if (supportsEncoder(ffmpegPath, 'h264_amf')) return 'h264_amf';
+    if (supportsEncoder(ffmpegPath, 'h264_videotoolbox')) return 'h264_videotoolbox';
+
+    console.warn(`  ⚠️  GPU mode requested, but the static FFmpeg binary does not support any hardware encoders. Falling back to CPU.`);
   }
 
   return 'libx264';
@@ -122,7 +139,7 @@ function spawnFfmpeg(
   if (codec === 'libx264') {
     args.push('-preset', 'ultrafast', '-crf', '18');
   } else if (codec === 'h264_nvenc') {
-    args.push('-preset', 'p3', '-cq', '20'); // nvenc constant quality
+    args.push('-preset', 'p3', '-cq:v', '20'); // nvenc constant quality using -cq:v
   } else if (codec === 'h264_videotoolbox') {
     args.push('-preset', 'slow', '-q:v', '65'); // videotoolbox quality target
   } else {
@@ -175,7 +192,7 @@ export async function render(
   log(`  Dev server running on port ${boundPort}...`);
 
   const mode = options.mode ?? 'auto';
-  const codec = detectGpuCodec(mode);
+  const codec = detectGpuCodec(ffmpegStatic ?? 'ffmpeg', mode);
   const useGpu = codec !== 'libx264';
  
   // 2. Launch Playwright

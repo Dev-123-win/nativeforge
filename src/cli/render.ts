@@ -59,51 +59,67 @@ function supportsEncoder(ffmpegPath: string, encoder: string): boolean {
   }
 }
 
-function detectGpuCodec(ffmpegPath: string, mode: 'cpu' | 'gpu' | 'stream' | 'auto'): string {
-  if (mode === 'cpu') return 'libx264';
-
-  // Heuristic 1: Check for NVIDIA GPU via nvidia-smi and verify FFmpeg supports it
+function resolveFfmpegAndCodec(mode: 'cpu' | 'gpu' | 'stream' | 'auto'): { ffmpegPath: string; codec: string } {
+  const staticPath = ffmpegStatic ?? 'ffmpeg';
+  const defaultCodec = 'libx264';
+ 
+  if (mode === 'cpu') {
+    return { ffmpegPath: staticPath, codec: defaultCodec };
+  }
+ 
+  // 1. Check if the system has an NVIDIA GPU
   let hasNvidia = false;
   try {
     execSync('nvidia-smi', { stdio: 'ignore' });
     hasNvidia = true;
   } catch {}
-
-  if (hasNvidia && supportsEncoder(ffmpegPath, 'h264_nvenc')) {
-    return 'h264_nvenc';
-  }
-
-  // Heuristic 2: Check for macOS Apple Silicon and verify Videotoolbox supports it
-  if (process.platform === 'darwin' && process.arch === 'arm64') {
-    if (supportsEncoder(ffmpegPath, 'h264_videotoolbox')) {
-      return 'h264_videotoolbox';
+ 
+  // 2. Prioritize system-wide 'ffmpeg' command first for GPU acceleration
+  if (hasNvidia) {
+    if (supportsEncoder('ffmpeg', 'h264_nvenc')) {
+      return { ffmpegPath: 'ffmpeg', codec: 'h264_nvenc' };
+    }
+    if (supportsEncoder(staticPath, 'h264_nvenc')) {
+      return { ffmpegPath: staticPath, codec: 'h264_nvenc' };
     }
   }
-
-  // Heuristic 3: Check for Intel/AMD graphics on Windows and verify support
+ 
+  // Heuristic 2: Check for macOS Apple Silicon (Videotoolbox)
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    if (supportsEncoder('ffmpeg', 'h264_videotoolbox')) {
+      return { ffmpegPath: 'ffmpeg', codec: 'h264_videotoolbox' };
+    }
+    if (supportsEncoder(staticPath, 'h264_videotoolbox')) {
+      return { ffmpegPath: staticPath, codec: 'h264_videotoolbox' };
+    }
+  }
+ 
+  // Heuristic 3: Check for Intel/AMD graphics on Windows
   if (process.platform === 'win32') {
     try {
       const output = execSync('wmic path win32_VideoController get name', { encoding: 'utf8' }).toLowerCase();
-      if (output.includes('intel') && supportsEncoder(ffmpegPath, 'h264_qsv')) {
-        return 'h264_qsv';
+      if (output.includes('intel')) {
+        if (supportsEncoder('ffmpeg', 'h264_qsv')) return { ffmpegPath: 'ffmpeg', codec: 'h264_qsv' };
+        if (supportsEncoder(staticPath, 'h264_qsv')) return { ffmpegPath: staticPath, codec: 'h264_qsv' };
       }
-      if ((output.includes('amd') || output.includes('radeon')) && supportsEncoder(ffmpegPath, 'h264_amf')) {
-        return 'h264_amf';
+      if (output.includes('amd') || output.includes('radeon')) {
+        if (supportsEncoder('ffmpeg', 'h264_amf')) return { ffmpegPath: 'ffmpeg', codec: 'h264_amf' };
+        if (supportsEncoder(staticPath, 'h264_amf')) return { ffmpegPath: staticPath, codec: 'h264_amf' };
       }
     } catch {}
   }
-
-  // Fallback checks: even if heuristics failed, check if the system FFmpeg binary itself supports any GPU encoder
+ 
+  // 3. Fallback checks for explicit 'gpu' mode
   if (mode === 'gpu') {
-    if (supportsEncoder(ffmpegPath, 'h264_nvenc')) return 'h264_nvenc';
-    if (supportsEncoder(ffmpegPath, 'h264_qsv')) return 'h264_qsv';
-    if (supportsEncoder(ffmpegPath, 'h264_amf')) return 'h264_amf';
-    if (supportsEncoder(ffmpegPath, 'h264_videotoolbox')) return 'h264_videotoolbox';
-
-    console.warn(`  ⚠️  GPU mode requested, but the static FFmpeg binary does not support any hardware encoders. Falling back to CPU.`);
+    for (const gpuCodec of ['h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_videotoolbox']) {
+      if (supportsEncoder('ffmpeg', gpuCodec)) return { ffmpegPath: 'ffmpeg', codec: gpuCodec };
+      if (supportsEncoder(staticPath, gpuCodec)) return { ffmpegPath: staticPath, codec: gpuCodec };
+    }
+ 
+    console.warn(`  ⚠️  GPU mode requested, but neither system 'ffmpeg' nor static 'ffmpeg-static' supports hardware encoding. Falling back to CPU.`);
   }
-
-  return 'libx264';
+ 
+  return { ffmpegPath: staticPath, codec: defaultCodec };
 }
 
 function spawnFfmpeg(
@@ -193,20 +209,10 @@ export async function render(
  
   const mode = options.mode ?? 'auto';
  
-  // Resolve which FFmpeg binary to use (preferring global system ffmpeg if it supports the requested GPU codec)
-  let ffmpegPath = ffmpegStatic ?? 'ffmpeg';
-  const tempCodec = detectGpuCodec(ffmpegPath, mode);
- 
-  if (tempCodec !== 'libx264') {
-    try {
-      const output = execSync('ffmpeg -encoders', { encoding: 'utf8' });
-      if (output.includes(tempCodec)) {
-        ffmpegPath = 'ffmpeg';
-      }
-    } catch {}
-  }
- 
-  const codec = detectGpuCodec(ffmpegPath, mode);
+  // Resolve both FFmpeg path and hardware codec in one step (preferring system-wide global ffmpeg command)
+  const resolved = resolveFfmpegAndCodec(mode);
+  const ffmpegPath = resolved.ffmpegPath;
+  const codec = resolved.codec;
   const useGpu = codec !== 'libx264';
  
   // 2. Launch Playwright

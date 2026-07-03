@@ -30,7 +30,7 @@ export interface RenderOptions {
   output?: string;
   port?: number;
   quiet?: boolean;
-  mode?: 'cpu' | 'gpu' | 'auto';
+  mode?: 'cpu' | 'gpu' | 'stream' | 'auto';
 }
 
 interface CompositionInfo {
@@ -59,7 +59,7 @@ function supportsEncoder(ffmpegPath: string, encoder: string): boolean {
   }
 }
 
-function detectGpuCodec(ffmpegPath: string, mode: 'cpu' | 'gpu' | 'auto'): string {
+function detectGpuCodec(ffmpegPath: string, mode: 'cpu' | 'gpu' | 'stream' | 'auto'): string {
   if (mode === 'cpu') return 'libx264';
 
   // Heuristic 1: Check for NVIDIA GPU via nvidia-smi and verify FFmpeg supports it
@@ -264,11 +264,24 @@ export async function render(
     log(`  Resolution: ${meta.width}×${meta.height} @ ${meta.fps}fps`);
     log(`  Duration:   ${meta.durationInFrames} frames (${(meta.durationInFrames / meta.fps).toFixed(2)}s)`);
 
-    // 4. Set up render context with correct viewport
+    // 4. Set up render context with correct viewport (and optional video recording)
+    const isStreamMode = mode === 'stream';
+    const videoDir = path.join(ROOT, 'out', 'temp');
+    if (isStreamMode) {
+      fs.mkdirSync(videoDir, { recursive: true });
+    }
+ 
     const context = await browser.newContext({
       viewport: { width: meta.width, height: meta.height },
       deviceScaleFactor: 1,
+      ...(isStreamMode ? {
+        recordVideo: {
+          dir: videoDir,
+          size: { width: meta.width, height: meta.height }
+        }
+      } : {})
     });
+ 
     const page: Page = await context.newPage();
     page.on('console', msg => {
       console.log(`[Render Browser Console] ${msg.type().toUpperCase()}: ${msg.text()}`);
@@ -277,96 +290,177 @@ export async function render(
       console.error(`[Render Browser Page Error] ${err.message}`);
       if (err.stack) console.error(err.stack);
     });
-
-    await page.clock.install({ time: new Date('2024-01-01T00:00:00Z') });
-    await page.goto(url);
-    await page.waitForFunction(() => !!(globalThis as any).__MOTIONFLOW_READY__, { timeout: 15000 });
-
-    // 5. Set up output path
+ 
+    // Set up output path
     const outputPath = options.output
       ?? path.join(ROOT, 'out', `${compositionId}.mp4`);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-
+ 
     if (!ffmpegStatic) throw new Error('ffmpeg-static not found');
-
-    // 6. Spawn ffmpeg subprocess (merging original audio track & setting encoder)
     const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
-    const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, codec, audioSourcePath);
-    const ffmpegDone = new Promise<void>((resolve, reject) => {
-      ffmpegProc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`ffmpeg process exited with code ${code}`));
-      });
-    });
-
-    // 7. Frame render loop
-    const { durationInFrames, fps } = meta;
-    const frameDuration = 1000 / fps;
-    const startTime = Date.now();
-
-    log(`\n  Rendering frames:`);
-
-    for (let f = 0; f < durationInFrames; f++) {
-      // a. Advance virtual time by one frame
-      await page.clock.fastForward(frameDuration);
-
-      // b. Synchronously await the video frame seek and set the React frame state
-      await page.evaluate(async ([f, fpsVal]) => {
-        if ((globalThis as any).__setFrame) {
-          (globalThis as any).__setFrame(f);
+ 
+    if (isStreamMode) {
+      // 🚀 STREAM / REAL-TIME CAPTURE MODE (Bypasses screenshots and WebSockets entirely!)
+      log(`\n  Capturing tab video stream natively (GPU Accelerated)...`);
+      const playUrl = `${url}&play=true`;
+      
+      const startTime = Date.now();
+      await page.goto(playUrl);
+      await page.waitForFunction(() => !!(globalThis as any).__MOTIONFLOW_READY__, { timeout: 15000 });
+ 
+      const renderDuration = meta.durationInFrames / meta.fps;
+      const step = 0.4;
+      for (let elapsedSec = 0; elapsedSec < renderDuration + 0.3; elapsedSec += step) {
+        await page.waitForTimeout(step * 1000);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const pct = Math.min(100, Math.round((parseFloat(elapsed) / renderDuration) * 100));
+        const bar = '█'.repeat(Math.floor(pct / 5)) + '░'.repeat(20 - Math.floor(pct / 5));
+        process.stdout.write(
+          `\r  [${bar}] Streaming tab: ${elapsed}s / ${renderDuration.toFixed(1)}s (${pct}%)`
+        );
+      }
+      process.stdout.write(`\n`);
+ 
+      // Fetch recorded video path before closing context
+      const videoPath = await page.video()?.path();
+      await page.close();
+      await context.close();
+ 
+      if (!videoPath) {
+        throw new Error('Playwright video recording failed (no videoPath returned).');
+      }
+ 
+      log(`  Real-time capture complete. Merging audio track in FFmpeg...`);
+      const mergeDone = new Promise<void>((resolve, reject) => {
+        const args = [
+          '-i', videoPath,
+        ];
+        let hasAudio = false;
+        if (fs.existsSync(audioSourcePath)) {
+          args.push('-i', audioSourcePath);
+          hasAudio = true;
         }
-        if ((globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__) {
-          await (globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__(f, fpsVal);
-        }
-      }, [f, fps] as const);
-
-      // c. Wait for the next requestAnimationFrame paint so Framer Motion renders the overlays
-      await page.evaluate(`
-        new Promise((res) => {
-          requestAnimationFrame(() => res());
-        })
-      `);
-
-      // c. Capture via page.screenshot — using JPEG for speed
-      const jpegBuffer = await page.screenshot({
-        type: 'jpeg',
-        quality: 90,
+        args.push(
+          '-map', '0:v',
+          ...(hasAudio ? ['-map', '1:a?'] : []),
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-preset', 'ultrafast',
+          '-crf', '18',
+          ...(hasAudio ? ['-c:a', 'aac'] : []),
+          '-shortest',
+          '-y',
+          outputPath
+        );
+ 
+        const proc = spawn(ffmpegStatic ?? 'ffmpeg', args, { stdio: 'ignore' });
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg merge exited with code ${code}`));
+        });
       });
  
-      // d. Decode JPEG → raw RGBA using sharp
-      const rgbaBuffer = await sharp(jpegBuffer)
-        .raw()
-        .ensureAlpha()
-        .toBuffer();
-
-      // e. Write to ffmpeg stdin (incremental — constant RAM usage)
-      const canWrite = ffmpegProc.stdin!.write(rgbaBuffer);
-      if (!canWrite) {
-        await new Promise<void>((r) => ffmpegProc.stdin!.once('drain', r));
+      await mergeDone;
+ 
+      // Clean up temporary WebM recording
+      try {
+        fs.unlinkSync(videoPath);
+      } catch {}
+ 
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      const fileSize = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(2);
+ 
+      log(`\n  ✅ Done!`);
+      log(`  Output:  ${outputPath}`);
+      log(`  Size:    ${fileSize} MB`);
+      log(`  Time:    ${totalTime}s\n`);
+ 
+      return outputPath;
+ 
+    } else {
+      // 🐢 CLASSIC FRAME-BY-FRAME SCREENSHOT MODE
+      await page.clock.install({ time: new Date('2024-01-01T00:00:00Z') });
+      await page.goto(url);
+      await page.waitForFunction(() => !!(globalThis as any).__MOTIONFLOW_READY__, { timeout: 15000 });
+ 
+      // Spawn ffmpeg subprocess
+      const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, codec, audioSourcePath);
+      const ffmpegDone = new Promise<void>((resolve, reject) => {
+        ffmpegProc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg process exited with code ${code}`));
+        });
+      });
+ 
+      // Frame render loop
+      const { durationInFrames, fps } = meta;
+      const frameDuration = 1000 / fps;
+      const startTime = Date.now();
+ 
+      log(`\n  Rendering frames:`);
+ 
+      for (let f = 0; f < durationInFrames; f++) {
+        // a. Advance virtual time by one frame
+        await page.clock.fastForward(frameDuration);
+ 
+        // b. Synchronously await the video frame seek and set the React frame state
+        await page.evaluate(async ([f, fpsVal]) => {
+          if ((globalThis as any).__setFrame) {
+            (globalThis as any).__setFrame(f);
+          }
+          if ((globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__) {
+            await (globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__(f, fpsVal);
+          }
+        }, [f, fps] as const);
+ 
+        // c. Wait for the next requestAnimationFrame paint so Framer Motion renders the overlays
+        await page.evaluate(`
+          new Promise((res) => {
+            requestAnimationFrame(() => res());
+          })
+        `);
+ 
+        // c. Capture via page.screenshot — using JPEG for speed
+        const jpegBuffer = await page.screenshot({
+          type: 'jpeg',
+          quality: 90,
+        });
+ 
+        // d. Decode JPEG → raw RGBA using sharp
+        const rgbaBuffer = await sharp(jpegBuffer)
+          .raw()
+          .ensureAlpha()
+          .toBuffer();
+ 
+        // e. Write to ffmpeg stdin (incremental — constant RAM usage)
+        const canWrite = ffmpegProc.stdin!.write(rgbaBuffer);
+        if (!canWrite) {
+          await new Promise<void>((r) => ffmpegProc.stdin!.once('drain', r));
+        }
+ 
+        // Progress display
+        const pct = Math.round(((f + 1) / durationInFrames) * 100);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const bar = '█'.repeat(Math.floor(pct / 5)) + '░'.repeat(20 - Math.floor(pct / 5));
+        process.stdout.write(
+          `\r  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) ${elapsed}s`
+        );
       }
-
-      // Progress display
-      const pct = Math.round(((f + 1) / durationInFrames) * 100);
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const bar = '█'.repeat(Math.floor(pct / 5)) + '░'.repeat(20 - Math.floor(pct / 5));
-      process.stdout.write(
-        `\r  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) ${elapsed}s`
-      );
+ 
+      // 8. Close ffmpeg stdin and wait for finalization
+      ffmpegProc.stdin!.end();
+      await ffmpegDone;
+ 
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      const fileSize = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(2);
+ 
+      log(`\n\n  ✅ Done!`);
+      log(`  Output:  ${outputPath}`);
+      log(`  Size:    ${fileSize} MB`);
+      log(`  Time:    ${totalTime}s\n`);
+ 
+      return outputPath;
     }
-
-    // 8. Close ffmpeg stdin and wait for finalization
-    ffmpegProc.stdin!.end();
-    await ffmpegDone;
-
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    const fileSize = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(2);
-
-    log(`\n\n  ✅ Done!`);
-    log(`  Output:  ${outputPath}`);
-    log(`  Size:    ${fileSize} MB`);
-    log(`  Time:    ${totalTime}s\n`);
-
-    return outputPath;
 
   } finally {
     await browser.close();

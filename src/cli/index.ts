@@ -32,7 +32,7 @@ program
   .description('Render a composition to MP4')
   .option('--props <json>', 'Override default props as a JSON string')
   .option('--output <path>', 'Output file path (default: out/<id>.mp4)')
-  .option('--mode <mode>', 'Rendering mode: cpu, gpu, auto', 'auto')
+  .option('--mode <mode>', 'Rendering mode: cpu, gpu, stream, auto', 'auto')
   .option('--batch <dataFile>', 'Batch render from a JSON array of props')
   .option(
     '--concurrency <n>',
@@ -60,7 +60,7 @@ program
  
       await render(compositionId, propsOverride, { 
         output: opts.output,
-        mode: opts.mode as 'cpu' | 'gpu' | 'auto'
+        mode: opts.mode as 'cpu' | 'gpu' | 'stream' | 'auto'
       });
     }
   });

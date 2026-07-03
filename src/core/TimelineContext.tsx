@@ -36,10 +36,16 @@ interface TimelineProviderProps {
  */
 export function TimelineProvider({ children, config }: TimelineProviderProps) {
   const [frame, setFrame] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlaying] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('play') === 'true';
+    }
+    return false;
+  });
   const configRef = useRef(config);
   configRef.current = config;
-
+ 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'SET_FRAME') {
@@ -47,7 +53,7 @@ export function TimelineProvider({ children, config }: TimelineProviderProps) {
         const isPlaying = e.data.playing as boolean ?? false;
         const fps = configRef.current.fps;
         const virtualMs = (targetFrame / fps) * 1000;
-
+ 
         // Set the override BEFORE setState so Framer Motion reads the
         // correct virtual timestamp on the very next render cycle.
         (performance as any).__motionFlowOverride = virtualMs;
@@ -55,9 +61,9 @@ export function TimelineProvider({ children, config }: TimelineProviderProps) {
         setPlaying(isPlaying);
       }
     };
-
+ 
     window.addEventListener('message', handler);
-
+ 
     // Expose for Playwright's page.evaluate() in render mode
     (window as any).__setFrame = (f: number) => {
       const fps = configRef.current.fps;
@@ -66,7 +72,7 @@ export function TimelineProvider({ children, config }: TimelineProviderProps) {
       setFrame(f);
       setPlaying(false);
     };
-
+ 
     // Signal to Playwright that the composition is mounted and ready (waiting for all videos to be ready)
     const checkVideosReady = () => {
       const videos = Array.from(document.querySelectorAll('video'));
@@ -87,20 +93,55 @@ export function TimelineProvider({ children, config }: TimelineProviderProps) {
         });
       }
     };
-
+ 
     requestAnimationFrame(() => {
       checkVideosReady();
     });
-
+ 
     // Notify parent studio that iframe is loaded and ready to sync frame
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ type: 'IFRAME_READY' }, '*');
     }
-
+ 
     return () => {
       window.removeEventListener('message', handler);
     };
   }, []);
+ 
+  // Local real-time playback loop driven by performance.now() when playing is true
+  useEffect(() => {
+    if (!playing) return;
+ 
+    const fps = configRef.current.fps;
+    const duration = configRef.current.durationInFrames;
+    const startVal = performance.now();
+    const elapsedAtStart = (frame / fps) * 1000;
+    const startTime = startVal - elapsedAtStart;
+    let animFrame = 0;
+ 
+    const tick = (now: number) => {
+      const elapsedMs = now - startTime;
+      const targetFrame = Math.floor((elapsedMs / 1000) * fps);
+      const virtualMs = (targetFrame / fps) * 1000;
+ 
+      // Synchronize virtual performance time so Framer Motion matches this tick
+      (performance as any).__motionFlowOverride = virtualMs;
+ 
+      if (targetFrame >= duration) {
+        setFrame(duration - 1);
+        setPlaying(false);
+        return;
+      }
+ 
+      setFrame(targetFrame);
+      animFrame = requestAnimationFrame(tick);
+    };
+ 
+    animFrame = requestAnimationFrame(tick);
+    return () => {
+      if (animFrame) cancelAnimationFrame(animFrame);
+    };
+  }, [playing]);
 
   const value: TimelineState = {
     frame,

@@ -54,7 +54,8 @@ function spawnFfmpeg(
   width: number,
   height: number,
   fps: number,
-  outputPath: string
+  outputPath: string,
+  audioSourcePath?: string
 ): ChildProcess {
   const args = [
     '-f', 'rawvideo',
@@ -62,14 +63,25 @@ function spawnFfmpeg(
     '-video_size', `${width}x${height}`,
     '-framerate', String(fps),
     '-i', 'pipe:0',
+  ];
+
+  if (audioSourcePath && fs.existsSync(audioSourcePath)) {
+    args.push('-i', audioSourcePath);
+    args.push('-map', '0:v');
+    args.push('-map', '1:a?');
+    args.push('-c:a', 'aac');
+  }
+
+  args.push(
     '-c:v', 'libx264',
     '-pix_fmt', 'yuv420p',
     '-preset', 'ultrafast',
     '-crf', '18',
     '-movflags', '+faststart',
+    '-shortest',
     '-y',
-    outputPath,
-  ];
+    outputPath
+  );
 
   const proc = spawn(ffmpegPath, args, {
     stdio: ['pipe', 'ignore', 'pipe'],
@@ -179,8 +191,9 @@ export async function render(
 
     if (!ffmpegStatic) throw new Error('ffmpeg-static not found');
 
-    // 6. Spawn ffmpeg subprocess
-    const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath);
+    // 6. Spawn ffmpeg subprocess (merging original audio track)
+    const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
+    const ffmpegProc = spawnFfmpeg(ffmpegStatic, meta.width, meta.height, meta.fps, outputPath, audioSourcePath);
     const ffmpegDone = new Promise<void>((resolve, reject) => {
       ffmpegProc.on('close', (code) => {
         if (code === 0) resolve();

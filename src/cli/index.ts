@@ -61,26 +61,4 @@ program
     }
   });
 
-// ── render-fast ───────────────────────────────────────────────────────
-program
-  .command('render-fast <compositionId>')
-  .description('Fast render using transparent overlay merging')
-  .option('--props <json>', 'Override default props as a JSON string')
-  .option('--output <path>', 'Output file path (default: out/<id>.mp4)')
-  .action(async (compositionId: string, opts) => {
-    const { renderFast } = await import('./render-fast.js');
-
-    let propsOverride: Record<string, unknown> | undefined;
-    if (opts.props) {
-      try {
-        propsOverride = JSON.parse(opts.props);
-      } catch {
-        console.error(`  ❌ Invalid JSON passed to --props: ${opts.props}`);
-        process.exit(1);
-      }
-    }
-
-    await renderFast(compositionId, propsOverride, { output: opts.output });
-  });
-
 program.parse(process.argv);

@@ -216,14 +216,14 @@ export async function render(
         })
       `);
 
-      // c. [FIX 3] Capture via page.screenshot — native Node Buffer (no base64 overhead)
-      const pngBuffer = await page.screenshot({
-        type: 'png',
-        clip: { x: 0, y: 0, width: meta.width, height: meta.height },
+      // c. Capture via page.screenshot — using JPEG for speed
+      const jpegBuffer = await page.screenshot({
+        type: 'jpeg',
+        quality: 90,
       });
-
-      // d. Decode PNG → raw RGBA using sharp
-      const rgbaBuffer = await sharp(pngBuffer)
+ 
+      // d. Decode JPEG → raw RGBA using sharp
+      const rgbaBuffer = await sharp(jpegBuffer)
         .raw()
         .ensureAlpha()
         .toBuffer();

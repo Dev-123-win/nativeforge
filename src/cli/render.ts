@@ -208,6 +208,9 @@ export async function render(
   log(`  Dev server running on port ${boundPort}...`);
  
   const mode = options.mode ?? 'auto';
+  const isStreamMode = mode === 'stream';
+  const isLinux = process.platform === 'linux';
+  const useX11Grab = isStreamMode && isLinux && !!process.env.DISPLAY;
  
   // Resolve both FFmpeg path and hardware codec in one step (preferring system-wide global ffmpeg command)
   const resolved = resolveFfmpegAndCodec(mode);
@@ -216,7 +219,7 @@ export async function render(
   const useGpu = codec !== 'libx264';
  
   // 2. Launch Playwright
-  log(`  Launching headless Chromium (${useGpu ? 'GPU Accelerated' : 'CPU Software GL'})...`);
+  log(`  Launching ${useX11Grab ? 'headful virtual display' : 'headless'} Chromium (${useGpu ? 'GPU Accelerated' : 'CPU Software GL'})...`);
   log(`  Encoder:    ${codec} (${useGpu ? 'GPU hardware-accelerated' : 'CPU software-based'})`);
  
   const launchArgs = [
@@ -239,8 +242,11 @@ export async function render(
   }
  
   const browser: Browser = await chromium.launch({
-    headless: true,
-    args: launchArgs
+    headless: !useX11Grab,
+    args: [
+      ...launchArgs,
+      ...(useX11Grab ? ['--kiosk'] : [])
+    ]
   });
 
   try {
@@ -285,16 +291,16 @@ export async function render(
     log(`  Duration:   ${meta.durationInFrames} frames (${(meta.durationInFrames / meta.fps).toFixed(2)}s)`);
 
     // 4. Set up render context with correct viewport (and optional video recording)
-    const isStreamMode = mode === 'stream';
+    const useVideoRecord = isStreamMode && !useX11Grab;
     const videoDir = path.join(ROOT, 'out', 'temp');
-    if (isStreamMode) {
+    if (useVideoRecord) {
       fs.mkdirSync(videoDir, { recursive: true });
     }
  
     const context = await browser.newContext({
       viewport: { width: meta.width, height: meta.height },
       deviceScaleFactor: 1,
-      ...(isStreamMode ? {
+      ...(useVideoRecord ? {
         recordVideo: {
           dir: videoDir,
           size: { width: meta.width, height: meta.height }
@@ -320,11 +326,41 @@ export async function render(
     const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
  
     if (isStreamMode) {
-      // 🚀 STREAM / REAL-TIME CAPTURE MODE (Bypasses screenshots and WebSockets entirely!)
-      log(`\n  Capturing tab video stream natively (GPU Accelerated)...`);
+      // 🚀 STREAM / REAL-TIME CAPTURE MODE
       const playUrl = `${url}&play=true`;
-      
       const startTime = Date.now();
+      
+      let videoPath: string | undefined;
+      let captureProc: any;
+      let tempVideoPath: string | undefined;
+ 
+      if (useX11Grab) {
+        log(`\n  Capturing virtual screen directly via x11grab and GPU (100% Lossless)...`);
+        tempVideoPath = path.join(ROOT, 'out', 'temp', `${compositionId}_capture.mp4`);
+        fs.mkdirSync(path.dirname(tempVideoPath), { recursive: true });
+        
+        // Spawn FFmpeg to capture the display screen
+        captureProc = spawn(ffmpegPath, [
+          '-f', 'x11grab',
+          '-video_size', `${meta.width}x${meta.height}`,
+          '-framerate', String(meta.fps),
+          '-i', process.env.DISPLAY || ':99',
+          '-c:v', codec, // h264_nvenc or libx264
+          ...(codec === 'h264_nvenc' ? ['-preset', 'p3', '-qp', '20'] : ['-preset', 'ultrafast', '-crf', '18']),
+          '-pix_fmt', 'yuv420p',
+          '-y',
+          tempVideoPath
+        ], { stdio: 'ignore' });
+ 
+        // Small delay to let FFmpeg start grabbing the display before loading the browser
+        await page.waitForTimeout(500);
+      } else {
+        log(`\n  Capturing tab video stream natively (Playwright recordVideo)...`);
+      }
+ 
+      // Hide cursor to prevent permanent cursor recordings in the video
+      await page.addStyleTag({ content: '* { cursor: none !important; }' });
+ 
       await page.goto(playUrl);
       await page.waitForFunction(() => !!(globalThis as any).__MOTIONFLOW_READY__, { timeout: 15000 });
  
@@ -336,24 +372,35 @@ export async function render(
         const pct = Math.min(100, Math.round((parseFloat(elapsed) / renderDuration) * 100));
         const bar = '█'.repeat(Math.floor(pct / 5)) + '░'.repeat(20 - Math.floor(pct / 5));
         process.stdout.write(
-          `\r  [${bar}] Streaming tab: ${elapsed}s / ${renderDuration.toFixed(1)}s (${pct}%)`
+          `\r  [${bar}] Streaming: ${elapsed}s / ${renderDuration.toFixed(1)}s (${pct}%)`
         );
       }
       process.stdout.write(`\n`);
  
-      // Fetch recorded video path before closing context
-      const videoPath = await page.video()?.path();
-      await page.close();
-      await context.close();
+      if (useX11Grab) {
+        await page.close();
+        await context.close();
  
-      if (!videoPath) {
-        throw new Error('Playwright video recording failed (no videoPath returned).');
+        // Stop FFmpeg capture gracefully
+        captureProc.kill('SIGINT');
+        await new Promise<void>((res) => {
+          captureProc.on('close', () => res());
+        });
+        videoPath = tempVideoPath;
+      } else {
+        videoPath = await page.video()?.path();
+        await page.close();
+        await context.close();
+      }
+ 
+      if (!videoPath || !fs.existsSync(videoPath)) {
+        throw new Error('Video recording failed (no videoPath found).');
       }
  
       log(`  Real-time capture complete. Merging audio track in FFmpeg...`);
       const mergeDone = new Promise<void>((resolve, reject) => {
         const args = [
-          '-i', videoPath,
+          '-i', videoPath!,
         ];
         let hasAudio = false;
         if (fs.existsSync(audioSourcePath)) {
@@ -382,7 +429,7 @@ export async function render(
  
       await mergeDone;
  
-      // Clean up temporary WebM recording
+      // Clean up temporary recording
       try {
         fs.unlinkSync(videoPath);
       } catch {}

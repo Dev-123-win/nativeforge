@@ -142,6 +142,11 @@ export function useVideoSync(videoRef: React.RefObject<HTMLVideoElement | null>)
     if (!win) return;
 
     win.__MOTIONFLOW_SEEK_TO_FRAME__ = (targetFrame: number, targetFps: number) => {
+      const isFast = typeof window !== 'undefined' && window.location.search.includes('fast=true');
+      if (isFast) {
+        return Promise.resolve();
+      }
+
       const video = videoRef.current;
       if (!video) return Promise.resolve();
 

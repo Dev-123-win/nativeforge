@@ -9,6 +9,7 @@
   "scripts": {
     "studio": "tsx src/cli/index.ts studio",
     "render": "tsx src/cli/index.ts render",
+    "render-fast": "tsx src/cli/index.ts render-fast",
     "build": "vite build && tsc -p tsconfig.node.json",
     "typecheck": "tsc --noEmit"
   },

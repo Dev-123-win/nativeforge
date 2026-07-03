@@ -150,3 +150,25 @@ To create a premium, high-production explainer feel, we avoid flat transitions. 
 - **Counting Numbers**: Animate value changes from zero to target dynamically using Framer Motion's `useMotionValue` and `animate()` inside a custom tag component.
 - **Bar Grow Overshoots**: Animate comparison bars or progress indicators with an elastic ease-out curve (`ease: [0.34, 1.56, 0.64, 1]`) to add a high-fidelity bounce.
 - **SVG Path Drawing**: Checkmarks or vectors must draw themselves dynamically using `strokeDasharray` and `pathLength` properties.
+
+---
+
+## 🔊 Audio Rendering & Encoding Rules
+
+To ensure that rendered videos contain the correct voiceover, background music, and audio tracks, follow these rules in the headless render CLI:
+
+### 1. Headless Video/Audio Mapping (FFmpeg)
+- **Problem**: Capturing headless browser screenshots frame-by-frame ignores the audio of the browser tab.
+- **Rule**: You MUST supply the original video asset as a second input to FFmpeg, mapping the audio track from the original video file while using the screenshots from Playwright for the video track.
+- **FFmpeg Parameters**:
+  - `-i original.mp4`: Input the source video with the voiceover track.
+  - `-map 0:v`: Map the video frames from the browser screenshot stream (pipe:0).
+  - `-map 1:a?`: Map the audio track from the original video. The `?` makes the mapping optional so the command does not fail if the source video has no audio.
+  - `-c:a aac`: Re-encode the audio stream as high-quality AAC.
+  - `-shortest`: Forces FFmpeg to stop encoding when the shortest input stream (the raw video frame pipe) ends, avoiding infinite rendering loops.
+
+### 2. Web Audio API SFX Limitation
+- **Constraint**: Sound effects synthesized programmatically at runtime via the browser's **Web Audio API** (oscillators, gains, noise buffers) are audible during **Live Preview** (since the browser plays sound in real-time), but are **NOT** captured by the headless frame-by-frame screenshot renderer.
+- **Remedy**: For future projects, if sound effects are mandatory in the final output, they must either:
+  1. Be pre-rendered once inside the browser to static `.wav` files and saved on disk.
+  2. Be mixed into the final MP4 offline using FFmpeg delay filters (`adelay` and `amix`) at their exact trigger frame offsets.

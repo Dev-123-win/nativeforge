@@ -150,3 +150,44 @@ To create a premium, high-production explainer feel, we avoid flat transitions. 
 - **Counting Numbers**: Animate value changes from zero to target dynamically using Framer Motion's `useMotionValue` and `animate()` inside a custom tag component.
 - **Bar Grow Overshoots**: Animate comparison bars or progress indicators with an elastic ease-out curve (`ease: [0.34, 1.56, 0.64, 1]`) to add a high-fidelity bounce.
 - **SVG Path Drawing**: Checkmarks or vectors must draw themselves dynamically using `strokeDasharray` and `pathLength` properties.
+
+---
+
+## ⚡ Native Electron Rendering Specification
+
+To ensure fast, reliable, and high-fidelity video generation on any hardware (including weak CPUs with no GPU), the render pipeline uses a native offscreen Electron compositor:
+
+### 1. Compositor Pipeline Architecture
+- **Offscreen Window**: Spawns a hidden `BrowserWindow` with `offscreen: true`, `frame: false`, and `useContentSize: true`.
+- **Force 1:1 Pixel Mapping**: Disables high-DPI scaling bugs by setting:
+  ```typescript
+  app.commandLine.appendSwitch('force-device-scale-factor', '1');
+  ```
+  This ensures that Chromium's drawing canvas stays exactly `width` x `height` pixels, regardless of host OS scale factors.
+- **Content Resizing**: Forces window content size via `mainWindow.setContentSize(width, height)` to match composition dimensions exactly.
+- **Deterministic Loop**: Loop runs sequentially using `mainWindow.webContents.capturePage()` to grab raw pixel buffers and `image.toBitmap()` to pull uncompressed BGRA bytes directly.
+
+### 2. Time-Hijacking & Paint Synchronization
+- **Clock Preload**: `preload.js` overrides `performance.now()` to return mock time increments: `overrideTime = frame * (1000 / fps)`.
+- **Timeline Link**: Exposes `window.__MOTIONFLOW_UPDATE__` in `TimelineContext.tsx` to handle frame state changes instantly in React.
+- **Double Paint Guard**: Before capturing the page, wait for two nested `requestAnimationFrame` cycles inside the page context to guarantee that React state updates are fully committed and drawn to the canvas:
+  ```typescript
+  await webContents.executeJavaScript(`
+    window.__setFrame && window.__setFrame(currentFrame, fps);
+    new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  `);
+  ```
+
+### 3. FFmpeg Command Structure
+- **Raw Input**: Reads raw BGRA pixels via `stdin`:
+  ```bash
+  ffmpeg -y -f rawvideo -pix_fmt bgra -s <width>x<height> -r <fps> -i pipe:0
+  ```
+- **Perfect Audio Sync**: Maps background video audio if available:
+  ```bash
+  -i public/assets/<compId>.mp4 -map 0:v -map 1:a? -c:a aac -shortest
+  ```
+- **Lossless Encoding**: Optimized for weak CPUs and compatibility:
+  ```bash
+  -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -movflags +faststart
+  ```

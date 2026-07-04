@@ -6,17 +6,25 @@ const child_process_1 = require("child_process");
 const ffmpeg_static_1 = require("ffmpeg-static");
 const path = require("path");
 const fs = require("fs");
+// Disable background throttling for renderer process so requestAnimationFrame works reliably
+electron_1.app.commandLine.appendSwitch('disable-renderer-backgrounding');
+electron_1.app.commandLine.appendSwitch('disable-background-timer-throttling');
+electron_1.app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 let mainWindow;
 function startElectronRenderer(compositionId, outputPath) {
     function createWindow() {
         mainWindow = new electron_1.BrowserWindow({
-            width: 1920, height: 1080, show: false,
+            width: 1920,
+            height: 1080,
+            show: false,
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
                 contextIsolation: false,
                 offscreen: true
             }
         });
+        // Ensure the offscreen webContents compositor frame rate ticks regularly
+        mainWindow.webContents.setFrameRate(60);
         mainWindow.loadURL(`http://localhost:3101/composition.html?id=${compositionId}`);
     }
     electron_1.app.whenReady().then(() => {
@@ -61,36 +69,56 @@ function startElectronRenderer(compositionId, outputPath) {
             ffmpeg.stderr?.on('data', (data) => console.error(`[ffmpeg] ${data.toString()}`));
             console.log(`⚡ Starting Raw Pixel Pipeline: ${durationInFrames} frames...`);
             let currentFrame = 0;
-            let waitingForFrame = false;
-            const stepFrame = async () => {
-                if (waitingForFrame)
+            let frameBufferPromiseResolve = null;
+            // Subscribe to compositor frames
+            mainWindow.webContents.beginFrameSubscription((image) => {
+                if (!image || !frameBufferPromiseResolve)
                     return;
-                if (currentFrame >= durationInFrames) {
+                const resolve = frameBufferPromiseResolve;
+                frameBufferPromiseResolve = null;
+                resolve(image.toBitmap());
+            });
+            const renderLoop = async () => {
+                try {
+                    while (currentFrame < durationInFrames) {
+                        // 1. Create a promise that resolves when beginFrameSubscription receives the next frame
+                        const frameBufferPromise = new Promise((resolve) => {
+                            frameBufferPromiseResolve = resolve;
+                        });
+                        // 2. Trigger the paint and wait for requestAnimationFrame to complete
+                        await mainWindow.webContents.executeJavaScript(`
+              window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
+              new Promise(r => {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => r());
+                });
+              });
+            `);
+                        // 3. Wait for the compositor to deliver the frame buffer
+                        const rawBuffer = await frameBufferPromise;
+                        // 4. Write to FFmpeg (handling backpressure)
+                        const canWrite = ffmpeg.stdin.write(rawBuffer);
+                        if (!canWrite) {
+                            await new Promise((resolve) => ffmpeg.stdin.once('drain', resolve));
+                        }
+                        currentFrame++;
+                        // Print progress
+                        const pct = Math.round((currentFrame / durationInFrames) * 100);
+                        process.stdout.write(`\rProgress: ${currentFrame}/${durationInFrames} frames (${pct}%)`);
+                    }
+                    // Complete
                     mainWindow.webContents.endFrameSubscription();
                     ffmpeg.stdin.end();
-                    console.log(`✅ Render complete! Saved to: ${outputPath}`);
+                    console.log(`\n✅ Render complete! Saved to: ${outputPath}`);
                     setTimeout(() => electron_1.app.quit(), 1000);
-                    return;
                 }
-                waitingForFrame = true;
-                await mainWindow.webContents.executeJavaScript(`
-          window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
-          new Promise(r => requestAnimationFrame(() => r()));
-        `);
+                catch (error) {
+                    console.error("Error in render loop:", error);
+                    electron_1.app.quit();
+                }
             };
-            mainWindow.webContents.beginFrameSubscription((image) => {
-                if (!image || !waitingForFrame)
-                    return;
-                waitingForFrame = false;
-                currentFrame++;
-                const rawBuffer = image.toBitmap();
-                const canWrite = ffmpeg.stdin.write(rawBuffer);
-                if (canWrite)
-                    stepFrame();
-                else
-                    ffmpeg.stdin.once('drain', () => stepFrame());
-            });
-            stepFrame();
+            // Start the render loop
+            renderLoop();
         });
     });
 }

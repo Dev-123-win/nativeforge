@@ -4,18 +4,27 @@ import ffmpegStatic from 'ffmpeg-static';
 import * as path from 'path';
 import * as fs from 'fs';
 
+// Disable background throttling for renderer process so requestAnimationFrame works reliably
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 let mainWindow: BrowserWindow;
 
 export function startElectronRenderer(compositionId: string, outputPath: string) {
   function createWindow() {
     mainWindow = new BrowserWindow({
-      width: 1920, height: 1080, show: false,
+      width: 1920,
+      height: 1080,
+      show: false,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: false,
         offscreen: true
       }
     });
+    // Ensure the offscreen webContents compositor frame rate ticks regularly
+    mainWindow.webContents.setFrameRate(60);
     mainWindow.loadURL(`http://localhost:3101/composition.html?id=${compositionId}`);
   }
 
@@ -64,36 +73,64 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
       ffmpeg.stderr?.on('data', (data) => console.error(`[ffmpeg] ${data.toString()}`));
 
       console.log(`⚡ Starting Raw Pixel Pipeline: ${durationInFrames} frames...`);
+      
       let currentFrame = 0;
-      let waitingForFrame = false;
+      let frameBufferPromiseResolve: ((buf: Buffer) => void) | null = null;
 
-      const stepFrame = async () => {
-        if (waitingForFrame) return;
-        if (currentFrame >= durationInFrames) {
-          mainWindow.webContents.endFrameSubscription();
-          ffmpeg.stdin.end();
-          console.log(`✅ Render complete! Saved to: ${outputPath}`);
-          setTimeout(() => app.quit(), 1000);
-          return;
-        }
-        waitingForFrame = true;
-        await mainWindow.webContents.executeJavaScript(`
-          window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
-          new Promise(r => requestAnimationFrame(() => r()));
-        `);
-      };
-
+      // Subscribe to compositor frames
       mainWindow.webContents.beginFrameSubscription((image) => {
-        if (!image || !waitingForFrame) return;
-        waitingForFrame = false;
-        currentFrame++;
-        const rawBuffer = image.toBitmap();
-        const canWrite = ffmpeg.stdin.write(rawBuffer);
-        if (canWrite) stepFrame();
-        else ffmpeg.stdin.once('drain', () => stepFrame());
+        if (!image || !frameBufferPromiseResolve) return;
+        const resolve = frameBufferPromiseResolve;
+        frameBufferPromiseResolve = null;
+        resolve(image.toBitmap());
       });
 
-      stepFrame();
+      const renderLoop = async () => {
+        try {
+          while (currentFrame < durationInFrames) {
+            // 1. Create a promise that resolves when beginFrameSubscription receives the next frame
+            const frameBufferPromise = new Promise<Buffer>((resolve) => {
+              frameBufferPromiseResolve = resolve;
+            });
+
+            // 2. Trigger the paint and wait for requestAnimationFrame to complete
+            await mainWindow.webContents.executeJavaScript(`
+              window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
+              new Promise(r => {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => r());
+                });
+              });
+            `);
+
+            // 3. Wait for the compositor to deliver the frame buffer
+            const rawBuffer = await frameBufferPromise;
+
+            // 4. Write to FFmpeg (handling backpressure)
+            const canWrite = ffmpeg.stdin.write(rawBuffer);
+            if (!canWrite) {
+              await new Promise<void>((resolve) => ffmpeg.stdin.once('drain', resolve));
+            }
+
+            currentFrame++;
+            // Print progress
+            const pct = Math.round((currentFrame / durationInFrames) * 100);
+            process.stdout.write(`\rProgress: ${currentFrame}/${durationInFrames} frames (${pct}%)`);
+          }
+
+          // Complete
+          mainWindow.webContents.endFrameSubscription();
+          ffmpeg.stdin.end();
+          console.log(`\n✅ Render complete! Saved to: ${outputPath}`);
+          setTimeout(() => app.quit(), 1000);
+        } catch (error) {
+          console.error("Error in render loop:", error);
+          app.quit();
+        }
+      };
+
+      // Start the render loop
+      renderLoop();
     });
   });
 }

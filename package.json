@@ -7,28 +7,32 @@
     "motionflow": "./dist/cli/index.js"
   },
   "scripts": {
-    "studio": "tsx src/cli/index.ts studio",
+    "studio": "vite",
     "render": "tsx src/cli/index.ts render",
-    "build": "vite build && tsc -p tsconfig.node.json",
+    "electron:render": "concurrently \"vite --port 3101\" \"wait-on http://localhost:3101 && electron electron/main.js\"",
+    "build": "vite build && tsc -p tsconfig.node.json && npx tsc electron/main.ts --target es2022 --module commonjs --skipLibCheck true",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "framer-motion": "^11.3.0",
     "commander": "^12.1.0",
+    "electron": "^43.0.0",
     "ffmpeg-static": "^5.2.0",
+    "framer-motion": "^11.3.0",
+    "open": "^10.1.0",
     "playwright": "^1.45.0",
-    "open": "^10.1.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.3.4",
-    "typescript": "^5.5.3",
-    "tsx": "^4.16.2",
+    "@types/ffmpeg-static": "^3.0.1",
+    "@types/node": "^22.0.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/node": "^22.0.0",
-    "@types/ffmpeg-static": "^3.0.1"
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^10.0.3",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4",
+    "wait-on": "^9.0.10"
   }
 }

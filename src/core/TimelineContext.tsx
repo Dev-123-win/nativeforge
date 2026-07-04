@@ -72,6 +72,12 @@ export function TimelineProvider({ children, config }: TimelineProviderProps) {
       setFrame(f);
       setPlaying(false);
     };
+
+    // Expose for Electron preload update callback
+    (window as any).__MOTIONFLOW_UPDATE__ = (f: number) => {
+      setFrame(f);
+      setPlaying(false);
+    };
  
     // Signal to Playwright that the composition is mounted and ready (waiting for all videos to be ready)
     const checkVideosReady = () => {

@@ -291,7 +291,7 @@ export async function render(
   const quiet = options.quiet ?? false;
   const log   = (...args: unknown[]) => { if (!quiet) console.log(...args); };
 
-  log(`\n  🎬 MotionFlow Ultra-Fast Renderer`);
+  log(`\n  🎬 MotionFlow Native Electron Renderer`);
   log(`  Composition: ${compositionId}`);
 
   // ── 1. Start Vite dev server ───────────────────────────────────────────────
@@ -303,266 +303,46 @@ export async function render(
   }
 
   const boundPort = vite.config.server.port ?? port;
-  log(`  Dev server:  http://localhost:${boundPort}`);
+  log(`  Dev server running on port ${boundPort}...`);
 
-  // ── 2. Resolve encoder (single-pass cached GPU detection) ─────────────────
-  const mode = options.mode ?? 'auto';
-  const { ffmpegPath, codec } = resolveFfmpegAndCodec(mode);
-  const useGpu = codec !== 'libx264';
+  const outputPath = options.output ?? path.join(ROOT, 'out', `${compositionId}.mp4`);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  log(`  Encoder:     ${codec} (${useGpu ? '⚡ GPU hardware-accelerated' : '🖥️  CPU software'})`);
+  // ── 2. Spawn Electron process ──────────────────────────────────────────────
+  log(`  Spawning Electron native compositor process...`);
 
-  if (!ffmpegPath) throw new Error('FFmpeg binary not found. Install ffmpeg-static or add ffmpeg to PATH.');
+  // Locate the electron binary (usually under node_modules/.bin/electron)
+  const electronBin = process.platform === 'win32'
+    ? path.join(ROOT, 'node_modules', '.bin', 'electron.cmd')
+    : path.join(ROOT, 'node_modules', '.bin', 'electron');
 
-  // ── 3. Launch headless Chromium ───────────────────────────────────────────
-  //
-  // Memory-safe flags:
-  //   --no-sandbox               → Required on Linux/Colab/Docker (root-user containers)
-  //   --disable-setuid-sandbox   → Companion to --no-sandbox; prevents setuid errors
-  //   --disable-dev-shm-usage    → Critical: /dev/shm is only 64MB on Colab free tier;
-  //                                without this, the renderer OOMs and crashes
-  //   --disable-gpu              → Browser GPU is irrelevant for DOM screenshots;
-  //                                this prevents GPU init overhead in the browser process
-  //                                (distinct from FFmpeg GPU encoding, which is unaffected)
-  //
-  const launchArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--disable-software-rasterizer',
-    '--disable-web-security',
-    '--allow-running-insecure-content',
-  ];
+  const electronMain = path.join(ROOT, 'electron', 'main.js');
 
-  log(`  Launching headless Chromium (memory-safe mode)...`);
+  const childEnv = {
+    ...process.env,
+    COMPOSITION_ID: compositionId,
+    OUTPUT_PATH: outputPath,
+  };
 
-  const browser: Browser = await chromium.launch({
-    headless: true,
-    args: launchArgs,
+  const electronProc = spawn(electronBin, [electronMain], {
+    env: childEnv,
+    stdio: 'inherit'
   });
 
-  try {
-    // ── 4. Extract composition metadata ───────────────────────────────────
-    const propsParam = propsOverride
-      ? `&props=${encodeURIComponent(JSON.stringify(propsOverride))}`
-      : '';
-    const url = `http://localhost:${boundPort}/composition.html?id=${encodeURIComponent(compositionId)}&render=true${propsParam}`;
-
-    const metaContext = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
-    const metaPage: Page = await metaContext.newPage();
-
-    metaPage.on('pageerror', (err) => {
-      console.error(`[Browser Error] ${err.message}`);
-      if (err.stack) console.error(err.stack);
-    });
-
-    await metaPage.goto(url);
-    await metaPage.waitForFunction(
-      () => !!(globalThis as any).__MOTIONFLOW_READY__,
-      { timeout: 15000 }
-    );
-
-    const meta = await metaPage.evaluate((id: string) => {
-      const reg =
-        (globalThis as any).__motionFlowRegistry ||
-        (globalThis as any).__MOTIONFLOW_REGISTRY__;
-      if (!reg) throw new Error('MotionFlow registry not found on window.');
-      const comp = reg.getComposition(id);
-      if (!comp) throw new Error(`Composition "${id}" not found in registry.`);
-      return {
-        durationInFrames: comp.durationInFrames as number,
-        fps:              comp.fps              as number,
-        width:            comp.width            as number,
-        height:           comp.height           as number,
-      };
-    }, compositionId) as CompositionInfo;
-
-    await metaContext.close();
-
-    // Validate even dimensions (H.264 requirement)
-    if (meta.width % 2 !== 0 || meta.height % 2 !== 0) {
-      throw new Error(
-        `Composition dimensions ${meta.width}×${meta.height} contain odd numbers. ` +
-        `H.264 requires both width and height to be divisible by 2.`
-      );
-    }
-
-    log(`  Resolution:  ${meta.width}×${meta.height} @ ${meta.fps}fps`);
-    log(`  Duration:    ${meta.durationInFrames} frames (${(meta.durationInFrames / meta.fps).toFixed(2)}s)\n`);
-
-    // ── 5. Set up render context ───────────────────────────────────────────
-    const context = await browser.newContext({
-      viewport: { width: meta.width, height: meta.height },
-      deviceScaleFactor: 1,
-    });
-
-    const page: Page = await context.newPage();
-
-    page.on('pageerror', (err) => {
-      console.error(`[Render Browser Error] ${err.message}`);
-      if (err.stack) console.error(err.stack);
-    });
-
-    // ── 6. Install deterministic clock BEFORE navigation ──────────────────
-    //
-    // CRITICAL: page.clock.install() must be called before page.goto() so that
-    // Playwright intercepts ALL time APIs (performance.now, Date.now, setTimeout,
-    // setInterval, requestAnimationFrame) from the very first script execution.
-    // Installing after navigation leaves a window where Framer Motion may have
-    // already registered rAF callbacks against the real clock.
-    //
-    await page.clock.install({ time: new Date('2024-01-01T00:00:00Z') });
-    await page.goto(url);
-    await page.waitForFunction(
-      () => !!(globalThis as any).__MOTIONFLOW_READY__,
-      { timeout: 15000 }
-    );
-
-    // ── 7. Prepare output path and FFmpeg process ──────────────────────────
-    const outputPath = options.output ?? path.join(ROOT, 'out', `${compositionId}.mp4`);
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-
-    // Audio source: strip "edit-" prefix, look for matching MP4 in public/assets/
-    const audioSourcePath = path.join(ROOT, 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
-
-    const ffmpegProc = spawnFfmpeg(
-      ffmpegPath,
-      meta.width,
-      meta.height,
-      meta.fps,
-      outputPath,
-      codec,
-      audioSourcePath,
-    );
-
-    const ffmpegDone = new Promise<void>((resolve, reject) => {
-      ffmpegProc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`FFmpeg exited with code ${code}. Check stderr above for details.`));
-      });
-    });
-
-    // ── 8. Ultra-Fast Frame Loop ───────────────────────────────────────────
-    //
-    // Per-frame IPC breakdown (down from 3 to 2):
-    //   IPC #1 — page.clock.fastForward(frameDuration)
-    //            Steps the virtual clock forward, firing all pending rAF callbacks
-    //            and timers that Framer Motion registered. This is the deterministic
-    //            time driver mandated by SKILL.md.
-    //
-    //   IPC #2 — page.evaluate(merged: setFrame + videoSeek + rAF wait)
-    //            Previously these were 2 separate round-trips. By merging them into
-    //            a single evaluate, we eliminate one full Node↔Chromium IPC cycle
-    //            per frame. At 25fps / 3 min (4500 frames) = 4500 fewer IPC calls.
-    //
-    //   IPC #3 — page.screenshot({ type: 'png' })
-    //            Lossless PNG buffer. FFmpeg decodes this in C with libpng + SIMD.
-    //            No Node.js-level decode (sharp was removed), no generation loss.
-    //
-    const { durationInFrames, fps } = meta;
-    const frameDuration = 1000 / fps;
-    const startTime = Date.now();
-
-    // Detect whether we are running in a real TTY (local terminal)
-    // or a non-TTY environment like Google Colab / CI.
-    // In non-TTY mode, \r carriage-return tricks are invisible — output is
-    // only flushed on \n. We switch to a milestone logger that prints a new
-    // line every 5% so Colab shows live progress as the render runs.
-    const isTTY = process.stdout.isTTY === true;
-
-    // Milestone set: print at every 5% boundary (0%, 5%, 10% … 100%)
-    const milestoneEvery = Math.max(1, Math.floor(durationInFrames / 20));
-
-    log(`  ⚡ PNG Zero-Copy Pipeline active. Rendering ${durationInFrames} frames...`);
-    if (!isTTY && !quiet) {
-      console.log(`  (Non-TTY mode detected — progress prints every 5%)`);
-    }
-    log(``);
-
-    for (let f = 0; f < durationInFrames; f++) {
-      // IPC #1: Step the deterministic clock forward by exactly one frame duration.
-      // This fires all Framer Motion spring/tween/rAF callbacks synchronously.
-      await page.clock.fastForward(frameDuration);
-
-      // IPC #2: In a single round-trip — set the React frame state, seek the video
-      // element to the correct timestamp, and wait for the rAF paint to complete.
-      // The rAF await here is a guard against compositions that have async
-      // React state updates that trail behind the clock step.
-      await page.evaluate(
-        async (args: { frame: number; fpsVal: number }) => {
-          if ((globalThis as any).__setFrame) {
-            (globalThis as any).__setFrame(args.frame);
-          }
-          if ((globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__) {
-            await (globalThis as any).__MOTIONFLOW_SEEK_TO_FRAME__(args.frame, args.fpsVal);
-          }
-          // Wait for one final rAF so all React re-renders triggered by setFrame
-          // have committed to the DOM before we take the screenshot.
-          // NOTE: requestAnimationFrame is a browser global — it exists in the
-          // evaluate() browser context, not in Node.js.
-          await new Promise<void>((res) => (globalThis as any).requestAnimationFrame(() => res()));
-        },
-        { frame: f, fpsVal: fps }
-      );
-
-      // IPC #3: Capture a lossless PNG buffer.
-      // FFmpeg receives this via stdin and decodes it at the C level — no Node
-      // decoding, no JPEG generation loss, no sharp dependency.
-      const pngBuffer = await page.screenshot({ type: 'png' });
-
-      // Pipe to FFmpeg with strict backpressure: if stdin's internal buffer is
-      // full, pause the loop until FFmpeg drains it. This prevents Node from
-      // buffering gigabytes of raw frames in memory on slow encode paths.
-      const canWrite = ffmpegProc.stdin!.write(pngBuffer);
-      if (!canWrite) {
-        await new Promise<void>((r) => ffmpegProc.stdin!.once('drain', r));
+  return new Promise<string>((resolve, reject) => {
+    electronProc.on('close', async (code) => {
+      await vite?.close();
+      if (code === 0) {
+        log(`\n  🎉 Render completed successfully: ${outputPath}\n`);
+        resolve(outputPath);
+      } else {
+        reject(new Error(`Electron process exited with code ${code}`));
       }
+    });
 
-      // Progress indicator — two modes:
-      //   TTY   (local terminal): inline \r bar that rewrites the same line
-      //   non-TTY (Colab / CI):   newline milestone every 5% so output is visible
-      if (!quiet) {
-        const pct    = Math.round(((f + 1) / durationInFrames) * 100);
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const fps_actual = ((f + 1) / (Number(elapsed) || 0.001)).toFixed(1);
-
-        if (isTTY) {
-          // Standard inline progress bar for real terminals
-          const filled = Math.floor(pct / 5);
-          const bar    = '█'.repeat(filled) + '░'.repeat(20 - filled);
-          process.stdout.write(
-            `\r  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) ${elapsed}s`
-          );
-        } else {
-          // Colab / CI: print a new line at every 5% milestone so output flushes
-          const atMilestone = (f + 1) % milestoneEvery === 0 || f + 1 === durationInFrames;
-          if (atMilestone) {
-            const filled = Math.floor(pct / 5);
-            const bar    = '█'.repeat(filled) + '░'.repeat(20 - filled);
-            console.log(`  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) | ${elapsed}s elapsed | ${fps_actual} fps`);
-          }
-        }
-      }
-    }
-
-    // ── 9. Finalize ────────────────────────────────────────────────────────
-    ffmpegProc.stdin!.end();
-    await ffmpegDone;
-
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    const fileSize  = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(2);
-
-    log(`\n\n  ✅ Done!`);
-    log(`  Output:   ${outputPath}`);
-    log(`  Size:     ${fileSize} MB`);
-    log(`  Time:     ${totalTime}s`);
-    log(`  Speed:    ${(durationInFrames / fps / Number(totalTime)).toFixed(2)}× real-time\n`);
-
-    return outputPath;
-
-  } finally {
-    await browser.close();
-    await vite?.close();
-  }
+    electronProc.on('error', async (err) => {
+      await vite?.close();
+      reject(err);
+    });
+  });
 }

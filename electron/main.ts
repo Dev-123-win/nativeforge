@@ -1,0 +1,98 @@
+import { app, BrowserWindow } from 'electron';
+import { spawn } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
+import * as path from 'path';
+import * as fs from 'fs';
+
+let mainWindow: BrowserWindow;
+
+export function startElectronRenderer(compositionId: string, outputPath: string) {
+  function createWindow() {
+    mainWindow = new BrowserWindow({
+      width: 1920, height: 1080, show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: false,
+        offscreen: true
+      }
+    });
+    mainWindow.loadURL(`http://localhost:3101/composition.html?id=${compositionId}`);
+  }
+
+  app.whenReady().then(() => {
+    createWindow();
+    mainWindow.webContents.on('did-finish-load', async () => {
+      const meta = await mainWindow.webContents.executeJavaScript(`
+        window.__MOTIONFLOW_REGISTRY__ ? Object.values(window.__MOTIONFLOW_REGISTRY__)[0] : null
+      `);
+      if (!meta) { console.error("Registry not found."); app.quit(); return; }
+
+      const { width, height, fps, durationInFrames } = meta;
+      const audioSourcePath = path.join(process.cwd(), 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
+
+      const args = [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'rawvideo', '-pix_fmt', 'bgra',
+        '-s', `${width}x${height}`, '-r', String(fps),
+        '-i', 'pipe:0',
+      ];
+
+      if (fs.existsSync(audioSourcePath)) {
+        args.push('-i', audioSourcePath);
+        args.push('-map', '0:v', '-map', '1:a?', '-c:a', 'aac');
+      } else {
+        args.push('-map', '0:v');
+      }
+
+      args.push(
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-shortest', outputPath
+      );
+
+      const ffmpeg = spawn(ffmpegStatic || 'ffmpeg', args);
+      ffmpeg.stderr?.on('data', (data) => console.error(`[ffmpeg] ${data.toString()}`));
+
+      console.log(`⚡ Starting Raw Pixel Pipeline: ${durationInFrames} frames...`);
+      let currentFrame = 0;
+      let waitingForFrame = false;
+
+      const stepFrame = async () => {
+        if (waitingForFrame) return;
+        if (currentFrame >= durationInFrames) {
+          mainWindow.webContents.endFrameSubscription();
+          ffmpeg.stdin.end();
+          console.log(`✅ Render complete! Saved to: ${outputPath}`);
+          setTimeout(() => app.quit(), 1000);
+          return;
+        }
+        waitingForFrame = true;
+        await mainWindow.webContents.executeJavaScript(`
+          window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
+          new Promise(r => requestAnimationFrame(() => r()));
+        `);
+      };
+
+      mainWindow.webContents.beginFrameSubscription((frameBuffer) => {
+        if (!frameBuffer || !waitingForFrame) return;
+        waitingForFrame = false;
+        currentFrame++;
+        const canWrite = ffmpeg.stdin.write(frameBuffer);
+        if (canWrite) stepFrame();
+        else ffmpeg.stdin.once('drain', () => stepFrame());
+      });
+
+      stepFrame();
+    });
+  });
+}
+
+// If run directly via Electron CLI
+const compId = process.env.COMPOSITION_ID || process.argv[2];
+const outPath = process.env.OUTPUT_PATH || process.argv[3];
+
+if (compId && outPath) {
+  startElectronRenderer(compId, outPath);
+} else if (require.main === module || !module.parent) {
+  console.error("Usage: electron electron/main.js <compositionId> <outputPath>");
+  process.exit(1);
+}

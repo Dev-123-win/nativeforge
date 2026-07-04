@@ -69,23 +69,10 @@ function startElectronRenderer(compositionId, outputPath) {
             ffmpeg.stderr?.on('data', (data) => console.error(`[ffmpeg] ${data.toString()}`));
             console.log(`⚡ Starting Raw Pixel Pipeline: ${durationInFrames} frames...`);
             let currentFrame = 0;
-            let frameBufferPromiseResolve = null;
-            // Subscribe to compositor frames
-            mainWindow.webContents.beginFrameSubscription((image) => {
-                if (!image || !frameBufferPromiseResolve)
-                    return;
-                const resolve = frameBufferPromiseResolve;
-                frameBufferPromiseResolve = null;
-                resolve(image.toBitmap());
-            });
             const renderLoop = async () => {
                 try {
                     while (currentFrame < durationInFrames) {
-                        // 1. Create a promise that resolves when beginFrameSubscription receives the next frame
-                        const frameBufferPromise = new Promise((resolve) => {
-                            frameBufferPromiseResolve = resolve;
-                        });
-                        // 2. Trigger the paint and wait for requestAnimationFrame to complete
+                        // 1. Trigger the paint and wait for requestAnimationFrame to complete
                         await mainWindow.webContents.executeJavaScript(`
               window.__setFrame && window.__setFrame(${currentFrame}, ${fps});
               new Promise(r => {
@@ -94,11 +81,10 @@ function startElectronRenderer(compositionId, outputPath) {
                 });
               });
             `);
-                        // Force the offscreen webContents to repaint and generate a new compositor frame
-                        mainWindow.webContents.invalidate();
-                        // 3. Wait for the compositor to deliver the frame buffer
-                        const rawBuffer = await frameBufferPromise;
-                        // 4. Write to FFmpeg (handling backpressure)
+                        // 2. Capture the current page from the render surface
+                        const image = await mainWindow.webContents.capturePage();
+                        const rawBuffer = image.toBitmap();
+                        // 3. Write to FFmpeg (handling backpressure)
                         const canWrite = ffmpeg.stdin.write(rawBuffer);
                         if (!canWrite) {
                             await new Promise((resolve) => ffmpeg.stdin.once('drain', resolve));
@@ -109,7 +95,6 @@ function startElectronRenderer(compositionId, outputPath) {
                         process.stdout.write(`\rProgress: ${currentFrame}/${durationInFrames} frames (${pct}%)`);
                     }
                     // Complete
-                    mainWindow.webContents.endFrameSubscription();
                     ffmpeg.stdin.end();
                     console.log(`\n✅ Render complete! Saved to: ${outputPath}`);
                     setTimeout(() => electron_1.app.quit(), 1000);

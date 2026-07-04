@@ -23,7 +23,18 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
     createWindow();
     mainWindow.webContents.on('did-finish-load', async () => {
       const meta = await mainWindow.webContents.executeJavaScript(`
-        window.__MOTIONFLOW_REGISTRY__ ? Object.values(window.__MOTIONFLOW_REGISTRY__)[0] : null
+        (() => {
+          const reg = window.__motionFlowRegistry || window.__MOTIONFLOW_REGISTRY__;
+          if (!reg) return null;
+          const comp = reg.getComposition("${compositionId}");
+          if (!comp) return null;
+          return {
+            width: comp.width,
+            height: comp.height,
+            fps: comp.fps,
+            durationInFrames: comp.durationInFrames
+          };
+        })()
       `);
       if (!meta) { console.error("Registry not found."); app.quit(); return; }
 

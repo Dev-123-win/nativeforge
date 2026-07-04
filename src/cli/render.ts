@@ -317,8 +317,8 @@ export async function render(
     : path.join(ROOT, 'node_modules', '.bin', 'electron');
 
   const electronMain = process.platform === 'win32'
-    ? `"${path.join(ROOT, 'electron', 'main.js')}"`
-    : path.join(ROOT, 'electron', 'main.js');
+    ? `"${path.join(ROOT, 'electron', 'main.cjs')}"`
+    : path.join(ROOT, 'electron', 'main.cjs');
 
   const childEnv = {
     ...process.env,

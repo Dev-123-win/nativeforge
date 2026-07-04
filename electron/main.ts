@@ -8,6 +8,8 @@ import * as fs from 'fs';
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+// Force device scale factor to 1.0 so display scaling doesn't resize the offscreen canvas
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
 
 let mainWindow: BrowserWindow;
 
@@ -16,6 +18,8 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
     mainWindow = new BrowserWindow({
       width: 1920,
       height: 1080,
+      useContentSize: true,
+      frame: false,
       show: false,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
@@ -48,6 +52,10 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
       if (!meta) { console.error("Registry not found."); app.quit(); return; }
 
       const { width, height, fps, durationInFrames } = meta;
+      
+      // Set the content size to match the composition dimensions exactly
+      mainWindow.setContentSize(width, height);
+
       const audioSourcePath = path.join(process.cwd(), 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
 
       const args = [

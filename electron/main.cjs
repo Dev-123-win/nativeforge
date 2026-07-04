@@ -10,12 +10,16 @@ const fs = require("fs");
 electron_1.app.commandLine.appendSwitch('disable-renderer-backgrounding');
 electron_1.app.commandLine.appendSwitch('disable-background-timer-throttling');
 electron_1.app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+// Force device scale factor to 1.0 so display scaling doesn't resize the offscreen canvas
+electron_1.app.commandLine.appendSwitch('force-device-scale-factor', '1');
 let mainWindow;
 function startElectronRenderer(compositionId, outputPath) {
     function createWindow() {
         mainWindow = new electron_1.BrowserWindow({
             width: 1920,
             height: 1080,
+            useContentSize: true,
+            frame: false,
             show: false,
             webPreferences: {
                 preload: path.join(__dirname, 'preload.js'),
@@ -50,6 +54,8 @@ function startElectronRenderer(compositionId, outputPath) {
                 return;
             }
             const { width, height, fps, durationInFrames } = meta;
+            // Set the content size to match the composition dimensions exactly
+            mainWindow.setContentSize(width, height);
             const audioSourcePath = path.join(process.cwd(), 'public/assets', `${compositionId.replace('edit-', '')}.mp4`);
             const args = [
                 '-y', '-hide_banner', '-loglevel', 'error',

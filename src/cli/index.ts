@@ -59,8 +59,7 @@ program
       }
  
       await render(compositionId, propsOverride, { 
-        output: opts.output,
-        mode: opts.mode as 'cpu' | 'gpu' | 'auto'
+        output: opts.output
       });
     }
   });

@@ -313,10 +313,12 @@ export async function render(
 
   // Locate the electron binary (usually under node_modules/.bin/electron)
   const electronBin = process.platform === 'win32'
-    ? path.join(ROOT, 'node_modules', '.bin', 'electron.cmd')
+    ? `"${path.join(ROOT, 'node_modules', '.bin', 'electron.cmd')}"`
     : path.join(ROOT, 'node_modules', '.bin', 'electron');
 
-  const electronMain = path.join(ROOT, 'electron', 'main.js');
+  const electronMain = process.platform === 'win32'
+    ? `"${path.join(ROOT, 'electron', 'main.js')}"`
+    : path.join(ROOT, 'electron', 'main.js');
 
   const childEnv = {
     ...process.env,

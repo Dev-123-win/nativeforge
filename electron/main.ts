@@ -87,7 +87,7 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
         if (!image || !waitingForFrame) return;
         waitingForFrame = false;
         currentFrame++;
-        const rawBuffer = image.getBitmap();
+        const rawBuffer = image.toBitmap();
         const canWrite = ffmpeg.stdin.write(rawBuffer);
         if (canWrite) stepFrame();
         else ffmpeg.stdin.once('drain', () => stepFrame());

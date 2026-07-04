@@ -83,11 +83,12 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
         `);
       };
 
-      mainWindow.webContents.beginFrameSubscription((frameBuffer) => {
-        if (!frameBuffer || !waitingForFrame) return;
+      mainWindow.webContents.beginFrameSubscription((image) => {
+        if (!image || !waitingForFrame) return;
         waitingForFrame = false;
         currentFrame++;
-        const canWrite = ffmpeg.stdin.write(frameBuffer);
+        const rawBuffer = image.getBitmap();
+        const canWrite = ffmpeg.stdin.write(rawBuffer);
         if (canWrite) stepFrame();
         else ffmpeg.stdin.once('drain', () => stepFrame());
       });

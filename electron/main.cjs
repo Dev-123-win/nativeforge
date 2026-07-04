@@ -78,12 +78,13 @@ function startElectronRenderer(compositionId, outputPath) {
           new Promise(r => requestAnimationFrame(() => r()));
         `);
             };
-            mainWindow.webContents.beginFrameSubscription((frameBuffer) => {
-                if (!frameBuffer || !waitingForFrame)
+            mainWindow.webContents.beginFrameSubscription((image) => {
+                if (!image || !waitingForFrame)
                     return;
                 waitingForFrame = false;
                 currentFrame++;
-                const canWrite = ffmpeg.stdin.write(frameBuffer);
+                const rawBuffer = image.getBitmap();
+                const canWrite = ffmpeg.stdin.write(rawBuffer);
                 if (canWrite)
                     stepFrame();
                 else

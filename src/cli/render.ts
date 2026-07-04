@@ -378,14 +378,14 @@ export async function render(
       process.stdout.write(`\n`);
  
       if (useX11Grab) {
-        await page.close();
-        await context.close();
- 
-        // Stop FFmpeg capture gracefully
+        // Stop FFmpeg capture gracefully first
         captureProc.kill('SIGINT');
         await new Promise<void>((res) => {
           captureProc.on('close', () => res());
         });
+ 
+        await page.close();
+        await context.close();
         videoPath = tempVideoPath;
       } else {
         videoPath = await page.video()?.path();

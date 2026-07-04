@@ -94,6 +94,8 @@ function startElectronRenderer(compositionId, outputPath) {
                 });
               });
             `);
+                        // Force the offscreen webContents to repaint and generate a new compositor frame
+                        mainWindow.webContents.invalidate();
                         // 3. Wait for the compositor to deliver the frame buffer
                         const rawBuffer = await frameBufferPromise;
                         // 4. Write to FFmpeg (handling backpressure)

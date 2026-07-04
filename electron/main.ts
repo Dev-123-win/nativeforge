@@ -103,6 +103,9 @@ export function startElectronRenderer(compositionId: string, outputPath: string)
               });
             `);
 
+            // Force the offscreen webContents to repaint and generate a new compositor frame
+            mainWindow.webContents.invalidate();
+
             // 3. Wait for the compositor to deliver the frame buffer
             const rawBuffer = await frameBufferPromise;
 

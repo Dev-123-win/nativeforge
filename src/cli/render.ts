@@ -326,7 +326,8 @@ export async function render(
 
   const electronProc = spawn(electronBin, [electronMain], {
     env: childEnv,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
   });
 
   return new Promise<string>((resolve, reject) => {

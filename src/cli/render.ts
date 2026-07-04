@@ -464,7 +464,21 @@ export async function render(
     const frameDuration = 1000 / fps;
     const startTime = Date.now();
 
-    log(`  ⚡ PNG Zero-Copy Pipeline active. Rendering ${durationInFrames} frames...\n`);
+    // Detect whether we are running in a real TTY (local terminal)
+    // or a non-TTY environment like Google Colab / CI.
+    // In non-TTY mode, \r carriage-return tricks are invisible — output is
+    // only flushed on \n. We switch to a milestone logger that prints a new
+    // line every 5% so Colab shows live progress as the render runs.
+    const isTTY = process.stdout.isTTY === true;
+
+    // Milestone set: print at every 5% boundary (0%, 5%, 10% … 100%)
+    const milestoneEvery = Math.max(1, Math.floor(durationInFrames / 20));
+
+    log(`  ⚡ PNG Zero-Copy Pipeline active. Rendering ${durationInFrames} frames...`);
+    if (!isTTY && !quiet) {
+      console.log(`  (Non-TTY mode detected — progress prints every 5%)`);
+    }
+    log(``);
 
     for (let f = 0; f < durationInFrames; f++) {
       // IPC #1: Step the deterministic clock forward by exactly one frame duration.
@@ -505,15 +519,30 @@ export async function render(
         await new Promise<void>((r) => ffmpegProc.stdin!.once('drain', r));
       }
 
-      // Progress indicator
+      // Progress indicator — two modes:
+      //   TTY   (local terminal): inline \r bar that rewrites the same line
+      //   non-TTY (Colab / CI):   newline milestone every 5% so output is visible
       if (!quiet) {
-        const pct     = Math.round(((f + 1) / durationInFrames) * 100);
+        const pct    = Math.round(((f + 1) / durationInFrames) * 100);
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        const filled  = Math.floor(pct / 5);
-        const bar     = '█'.repeat(filled) + '░'.repeat(20 - filled);
-        process.stdout.write(
-          `\r  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) ${elapsed}s`
-        );
+        const fps_actual = ((f + 1) / (Number(elapsed) || 0.001)).toFixed(1);
+
+        if (isTTY) {
+          // Standard inline progress bar for real terminals
+          const filled = Math.floor(pct / 5);
+          const bar    = '█'.repeat(filled) + '░'.repeat(20 - filled);
+          process.stdout.write(
+            `\r  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) ${elapsed}s`
+          );
+        } else {
+          // Colab / CI: print a new line at every 5% milestone so output flushes
+          const atMilestone = (f + 1) % milestoneEvery === 0 || f + 1 === durationInFrames;
+          if (atMilestone) {
+            const filled = Math.floor(pct / 5);
+            const bar    = '█'.repeat(filled) + '░'.repeat(20 - filled);
+            console.log(`  [${bar}] ${String(f + 1).padStart(String(durationInFrames).length)}/${durationInFrames} (${pct}%) | ${elapsed}s elapsed | ${fps_actual} fps`);
+          }
+        }
       }
     }
 

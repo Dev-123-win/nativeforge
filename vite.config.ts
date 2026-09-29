@@ -15,12 +15,15 @@ export default defineConfig({
   server: {
     port: 3100,
     strictPort: true,
+    host: '0.0.0.0',
+    allowedHosts: true,
   },
   build: {
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html'),
         composition: path.resolve(__dirname, 'composition.html'),
+        forgeScene: path.resolve(__dirname, 'forge-scene.html'),
       },
     },
   },

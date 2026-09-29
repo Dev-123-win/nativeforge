@@ -4,6 +4,11 @@ import type { CompositionConfig } from '../core/Composition';
 import { Viewport } from './Viewport';
 import { PlayerBar } from './PlayerBar';
 import { CompositionList } from './CompositionList';
+// Forge (three.js + rapier) is code-split: MotionFlow mode never downloads it.
+const ForgeApp = React.lazy(() =>
+  import('../forge/ui/ForgeApp').then((m) => ({ default: m.ForgeApp })),
+);
+import '../forge/ui/forge.css';
 import Root from '../Root';
 
 // Call Root() directly (not via JSX) to synchronously fire all Composition()
@@ -13,6 +18,19 @@ Root();
 
 
 export function App() {
+  const [mode, setMode] = useState<'motion' | 'forge'>(() => {
+    try {
+      return (localStorage.getItem('nativeforge:mode') as 'motion' | 'forge') || 'motion';
+    } catch {
+      return 'motion';
+    }
+  });
+  const switchMode = (m: 'motion' | 'forge') => {
+    setMode(m);
+    try {
+      localStorage.setItem('nativeforge:mode', m);
+    } catch { /* ignore */ }
+  };
   const [compositions, setCompositions] = useState<CompositionConfig[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
@@ -146,6 +164,27 @@ export function App() {
 
         <div className="header-spacer" />
 
+        <div className="forge-mode-switch" role="tablist" aria-label="Studio mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'motion'}
+            className={mode === 'motion' ? 'active' : ''}
+            onClick={() => switchMode('motion')}
+          >
+            ⚡ Motion
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'forge'}
+            className={mode === 'forge' ? 'active' : ''}
+            onClick={() => switchMode('forge')}
+          >
+            🧪 Physics
+          </button>
+        </div>
+
         {selectedId && (
           <button className="header-back-btn" onClick={handleBack}>
             ← All Compositions
@@ -154,6 +193,13 @@ export function App() {
       </header>
 
       {/* Main content */}
+      {mode === 'forge' ? (
+        <React.Suspense
+          fallback={<div className="main"><div className="empty-state"><div className="empty-state-title">Loading Physics Studio…</div></div></div>}
+        >
+          <ForgeApp onExit={() => switchMode('motion')} />
+        </React.Suspense>
+      ) : (
       <div className="main">
         {selectedComp ? (
           <>
@@ -179,6 +225,7 @@ export function App() {
           <CompositionList compositions={compositions} onSelect={handleSelect} />
         )}
       </div>
+      )}
     </div>
   );
 }

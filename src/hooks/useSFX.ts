@@ -275,10 +275,11 @@ export function useSFX() {
     ns.stop(t + 0.13);
   }, [getAudio]);
 
-  const success = useCallback(() => {
+  const success = useCallback((options?: { volume?: number }) => {
     const audio = getAudio();
     if (!audio) return;
     const { ctx, master } = audio;
+    const vol = options?.volume ?? 1;
 
     // Ascending harmonic triad
     [[523.25, 0], [659.25, 0.07], [783.99, 0.13]].forEach(([freq, delay]) => {
@@ -291,8 +292,8 @@ export function useSFX() {
       o.frequency.linearRampToValueAtTime(jitter(freq * 1.003, 3), t + 0.18);
 
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.22, t + 0.018);
-      g.gain.setValueAtTime(0.22, t + 0.06);
+      g.gain.linearRampToValueAtTime(0.22 * vol, t + 0.018);
+      g.gain.setValueAtTime(0.22 * vol, t + 0.06);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
 
       o.connect(g);
@@ -442,11 +443,12 @@ export function useSFX() {
     o.stop(t + 0.045);
   }, [getAudio]);
 
-  const numberLand = useCallback(() => {
+  const numberLand = useCallback((options?: { volume?: number }) => {
     const audio = getAudio();
     if (!audio) return;
     const { ctx, master } = audio;
     const t = ctx.currentTime;
+    const vol = options?.volume ?? 1;
 
     [[880, 0], [1108, 0.05]].forEach(([freq, delay]) => {
       const o = ctx.createOscillator();
@@ -454,7 +456,7 @@ export function useSFX() {
       o.type = 'sine';
       o.frequency.value = freq;
 
-      g.gain.setValueAtTime(0.14, t + delay);
+      g.gain.setValueAtTime(0.14 * vol, t + delay);
       g.gain.exponentialRampToValueAtTime(0.001, t + delay + 0.2);
 
       o.connect(g);

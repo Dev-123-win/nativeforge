@@ -64,4 +64,22 @@ program
     }
   });
 
+// ── render-forge ──────────────────────────────────────────────────────
+program
+  .command('render-forge <sceneFile>')
+  .description('Render a Forge physics scene (.forge.json) to MP4')
+  .option('--output <path>', 'Output file path (default: out/<sceneId>.mp4)')
+  .option('--port <number>', 'Dev server port', '3101')
+  .option('--audio <path>', 'Audio file to mux (AAC)')
+  .option('--gpu-mode <mode>', 'Encoder selection: auto, cpu, gpu', 'auto')
+  .action(async (sceneFile: string, opts) => {
+    const { renderForge } = await import('./render-forge.js');
+    await renderForge(sceneFile, {
+      output: opts.output,
+      port: parseInt(opts.port, 10),
+      audio: opts.audio,
+      gpuMode: opts.gpuMode,
+    });
+  });
+
 program.parse(process.argv);

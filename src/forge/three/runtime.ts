@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import type {
   ForgeObject,
   ForgeScene,
@@ -46,6 +47,9 @@ interface Batch {
 /* ─── Geometry factory (unit-ish, scaled by mesh.scale) ──────────────────── */
 
 function geoCacheKey(g: GeometryData): string {
+  // Convex shards carry explicit vertices: key them exactly so re-breaks
+  // (rewind + re-fracture) hit the cache instead of rebuilding hulls.
+  if (g.type === 'convex') return `convex:${JSON.stringify(g.vertices ?? [])}`;
   return `${g.type}:${JSON.stringify(g.params)}`;
 }
 
@@ -76,6 +80,19 @@ function buildGeometry(g: GeometryData): THREE.BufferGeometry {
       return new THREE.CircleGeometry(1, 32);
     case 'ring':
       return new THREE.RingGeometry(0.6, 1, 32);
+    case 'convex': {
+      const v = g.vertices ?? [];
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i + 2 < v.length + 1; i += 3) {
+        pts.push(new THREE.Vector3(v[i], v[i + 1], v[i + 2]));
+      }
+      if (pts.length < 4) return new THREE.BoxGeometry(1, 1, 1);
+      try {
+        return new ConvexGeometry(pts);
+      } catch {
+        return new THREE.BoxGeometry(1, 1, 1);
+      }
+    }
     default:
       return new THREE.BoxGeometry(1, 1, 1);
   }
@@ -98,6 +115,8 @@ function geometryBaseScale(g: GeometryData): Vec3 {
     case 'circle':
     case 'ring':
       return [p.radius ?? p.outer ?? 1, p.radius ?? p.outer ?? 1, 1];
+    case 'convex':
+      return [1, 1, 1]; // explicit vertices are already full-size
     default:
       return [1, 1, 1];
   }
@@ -581,6 +600,8 @@ export class ThreeRuntime {
         opacity: d.opacity,
       });
       const mesh = new THREE.Mesh(geo, mat);
+      const b = geometryBaseScale(d.geometry);
+      mesh.scale.set(b[0] * d.scale[0], b[1] * d.scale[1], b[2] * d.scale[2]);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const t = transforms.get(d.id);

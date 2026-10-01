@@ -45,7 +45,8 @@ export type GeometryType =
   | 'torus'
   | 'plane'
   | 'circle'
-  | 'ring';
+  | 'ring'
+  | 'convex';
 
 export type FieldKind =
   | 'attractor'
@@ -72,7 +73,12 @@ export type MachineKind =
   | 'gate'
   | 'platform'
   | 'wheel';
-export type FractureMode = 'grid' | 'radial' | 'random' | 'voronoi-lite';
+export type FractureMode =
+  | 'grid'
+  | 'radial'
+  | 'random'
+  | 'voronoi-lite'
+  | 'voronoi';
 export type UiLevel = 'basic' | 'advanced' | 'expert';
 export type ConstraintType =
   | 'fixed'
@@ -247,6 +253,12 @@ export interface GeometryData {
   type: GeometryType;
   /** Shape params: radius, width/height/depth, segments... by type. */
   params: Record<string, number>;
+  /**
+   * Explicit vertices (flat xyz, geometry-local) for type 'convex'.
+   * Used by voronoi fracture fragments for both the convex-hull
+   * collider and the rendered mesh.
+   */
+  vertices?: number[];
 }
 
 /* ─── Objects ────────────────────────────────────────────────────────────── */

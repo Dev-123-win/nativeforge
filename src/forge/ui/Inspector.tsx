@@ -469,7 +469,7 @@ function BreakableSection({ obj, patch, level }: {
       {b.enabled && (
         <>
           <Select label="Pattern" value={b.mode}
-            options={['grid', 'radial', 'random', 'voronoi-lite']}
+            options={['grid', 'radial', 'random', 'voronoi-lite', 'voronoi']}
             onChange={(v) => set({ mode: v as typeof b.mode })} />
           <Num label="Fragments" value={b.fragmentCount} min={2} max={64} step={1}
             onChange={(v) => set({ fragmentCount: Math.round(v) })} />

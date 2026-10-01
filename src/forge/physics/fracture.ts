@@ -1,25 +1,36 @@
 /**
- * Fracture planner — chunk-based runtime fracture (v1).
+ * Fracture planner — chunk-based runtime fracture + exact 3D Voronoi.
  *
- * Honesty note: this is NOT mesh-accurate Voronoi shattering. On break, the
- * original body is removed and replaced by N convex chunk bodies (boxes)
- * filling its bounds. Chunks are real simulated bodies with real mass and
- * velocities — visually convincing for bursts/shatters, cheap enough for
- * large scenes. Mesh-accurate Voronoi pre-fracture is roadmap (documented).
+ * Chunk modes (grid/radial/random/voronoi-lite) replace the body with N
+ * box bodies filling its bounds — cheap and convincing. Mode 'voronoi'
+ * shatters the bounds into exact convex Voronoi cells (see voronoi.ts):
+ * volume-conserving, deterministic, real mass per shard.
+ *
+ * Honesty note: voronoi cells tile the object's axis-aligned bounds, not
+ * curved surfaces — exact for boxes, an AABB approximation for spheres
+ * and other curved inputs (documented in FORGE.md).
  */
 
 import type { FractureMode, Vec3 } from '../core/types';
 import { Rng } from '../core/rng';
+import { shatterBox, VORONOI_MAX_CELLS } from './voronoi';
 
 export interface FragmentSpec {
   /** Offset from the original center (world-aligned, pre-rotation). */
   offset: Vec3;
-  /** Full size of the chunk box. */
+  /** Full size of the chunk box (cell AABB for voronoi). */
   size: Vec3;
   /** Initial velocity imparted at break. */
   velocity: Vec3;
-  /** Rotation for visual variety. */
+  /** Rotation for visual variety (ignored when alignToParent). */
   rotation: Vec3;
+  /**
+   * Exact convex shard vertices, centroid-relative, for voronoi mode.
+   * The runtime builds a convex-hull collider + mesh from these.
+   */
+  convex?: Vec3[];
+  /** When true the fragment inherits the parent orientation exactly. */
+  alignToParent?: boolean;
 }
 
 /** Split count per axis for grid mode targeting ~count chunks. */
@@ -36,8 +47,48 @@ export function planFracture(
   spread: number,
 ): FragmentSpec[] {
   const rng = new Rng(seed);
-  const n = Math.max(2, Math.min(64, Math.round(count)));
+  const cap = mode === 'voronoi' ? VORONOI_MAX_CELLS : 64;
+  const n = Math.max(2, Math.min(cap, Math.round(count)));
   const specs: FragmentSpec[] = [];
+
+  if (mode === 'voronoi') {
+    const cells = shatterBox(halfExtents, n, seed);
+    for (const cell of cells) {
+      const [cx, cy, cz] = cell.centroid;
+      // Cell AABB for the size channel (collider/mesh use convex points).
+      let mnx = Infinity;
+      let mny = Infinity;
+      let mnz = Infinity;
+      let mxx = -Infinity;
+      let mxy = -Infinity;
+      let mxz = -Infinity;
+      for (const p of cell.points) {
+        if (p[0] < mnx) mnx = p[0];
+        if (p[1] < mny) mny = p[1];
+        if (p[2] < mnz) mnz = p[2];
+        if (p[0] > mxx) mxx = p[0];
+        if (p[1] > mxy) mxy = p[1];
+        if (p[2] > mxz) mxz = p[2];
+      }
+      const len = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
+      const sp = spread * rng.range(0.5, 1.5);
+      specs.push({
+        offset: [cx, cy, cz],
+        size: [
+          Math.max(0.02, mxx - mnx),
+          Math.max(0.02, mxy - mny),
+          Math.max(0.02, mxz - mnz),
+        ],
+        velocity: [(cx / len) * sp, (cy / len) * sp + spread * 0.4, (cz / len) * sp],
+        rotation: [0, 0, 0],
+        convex: cell.points.map(
+          (p): Vec3 => [p[0] - cx, p[1] - cy, p[2] - cz],
+        ),
+        alignToParent: true,
+      });
+    }
+    return specs.slice(0, n);
+  }
 
   if (mode === 'grid' || mode === 'voronoi-lite') {
     const [nx, ny, nz] = gridDims(n);

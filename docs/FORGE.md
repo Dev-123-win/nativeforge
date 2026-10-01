@@ -63,7 +63,8 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 | `fields.ts` | Attractor/repulsor/vortex/wind/wave/turbulence/directional (pure force functions) | Real forces applied to dynamic bodies |
 | `pressure.ts` | Lumped-parameter vessels: leak, venting, reaction + radial forces | **Not CFD** — pressure as a real simulated variable |
 | `balloon.ts` | Puncture detector (tip touch / sharp impact / overpressure) + pop sequencing | Specialized system, reused via events for generic rupture |
-| `fracture.ts` | Chunk planner (grid/radial/random/voronoi-lite) | **Chunk-based**, not mesh-accurate Voronoi (roadmap) |
+| `fracture.ts` | Chunk planner (grid/radial/random/voronoi-lite) + exact voronoi mode | Chunk modes approximate; voronoi tiles the bounds exactly |
+| `voronoi.ts` | 3D Voronoi shatter: bisector half-space clipping + Lloyd relax | N seeds → N cells, volume conserved, winding-free mass |
 | `generators.ts` | Grid/circle/spiral/tower/pile/domino bakers, seeded | Pure + deterministic; baked batches share instancing keys |
 | `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
 | `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
@@ -108,6 +109,8 @@ v1 approximation, see §8.
   one render-frame of curve lag.
 - Effects: pop shrink animation, latex fragments (real bodies), GPU particle
   pool, shockwave rings, vent puffs, elastic squash for jelly-like materials.
+- Spawned bodies (fragments, emitter products) carry a scale channel so
+  visuals match their colliders; voronoi shards render as convex hulls.
 - `captureAt(w,h)` renders exact export resolution for frame PNGs/thumbs.
 - Quality tiers are real: pixel-ratio + shadow scaling.
 
@@ -178,7 +181,9 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
   runtime's subsystem layout).
 - Fluids: buoyancy/drag/vessels only; SPH/FLIP planned behind the same
   `PressureSystem`-style boundary.
-- Fracture is chunk-based (see §4).
+- Voronoi fracture tiles the object's axis-aligned bounds — exact for
+  boxes, an AABB approximation for curved inputs; capped at 48 cells per
+  break. Chunk modes remain for cheap bursts.
 - Codec selector beyond H.264, motion blur, and transparent-background
   export are planned; the Render tab marks quality/bitrate (real) vs codec
   (H.264 effective today).
@@ -209,8 +214,11 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
 
 ## 10. Testing & benchmarks
 
-- `npm test` (vitest): 38 tests — RNG, generators, fracture, balloon,
-  events, cache, isolation, materials, Rapier determinism, scrub-exactness,
+- `npm test` (vitest): 111 tests across 18 files — RNG, generators,
+  fracture (chunk + exact voronoi incl. volume conservation and
+  end-to-end shatter determinism), balloon, joints, ropes, drivers,
+  director eval, lanes, batch, schema, SFX synth, events, cache,
+  isolation, materials, Rapier determinism, scrub-exactness,
   **balloon-vs-cone burst integration**, fracture thresholds.
 - `npm run typecheck`, `vite build` must stay green.
 - Benchmarks: library starters generate 100 / 1k / 5k / 10k-ball scenes

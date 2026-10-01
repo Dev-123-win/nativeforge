@@ -208,6 +208,12 @@ export function sampleGeometryMesh(
         idx.push(a, b, c2, b, d2, c2);
       }
     }
+  } else if (type === 'convex') {
+    // Explicit vertices (voronoi shards); scale applies via push().
+    const verts = geo.vertices ?? [];
+    for (let i = 0; i + 2 < verts.length + 1; i += 3) {
+      push(verts[i], verts[i + 1], verts[i + 2]);
+    }
   } else {
     // plane / circle / ring → flat box slab so colliders stay volumetric.
     const w = type === 'plane' ? (p.width ?? 2) / 2 : (p.outer ?? p.radius ?? 1);
@@ -235,6 +241,8 @@ export interface RuntimeEventMsg {
 export interface SpawnedDescriptor {
   id: string;
   geometry: GeometryData;
+  /** Local scale applied to the spawned mesh (physics already scales). */
+  scale: Vec3;
   baseColor: string;
   metalness: number;
   roughness: number;
@@ -1701,6 +1709,7 @@ export class PhysicsRuntime {
       child.transform.position = [bp[0] + s.offset[0], bp[1] + s.offset[1], bp[2] + s.offset[2]];
       child.transform.rotation = [...s.rotation];
       child.transform.scale = [s.size[0], s.size[1], s.size[2]];
+      child.geometry = { type: 'box', params: { width: 1, height: 1, depth: 1 } };
       if (child.collider) {
         child.collider.shape = 'box';
         child.collider.halfExtents = [0.5, 0.5, 0.5];
@@ -1776,13 +1785,32 @@ export class PhysicsRuntime {
       // Rotate chunk offset by parent orientation.
       const off = rotateByQuat(s.offset, { x: bq[0], y: bq[1], z: bq[2], w: bq[3] });
       child.transform.position = [bp[0] + off[0], bp[1] + off[1], bp[2] + off[2]];
-      child.transform.rotation = [...s.rotation];
       const fs = br.fragmentScale;
-      child.transform.scale = [s.size[0] * fs, s.size[1] * fs, s.size[2] * fs];
-      if (child.collider) {
-        child.collider.shape = 'box';
-        child.collider.halfExtents = [0.5, 0.5, 0.5];
-        child.collider.offset = [0, 0, 0];
+      if (s.convex && s.convex.length >= 4) {
+        // Exact voronoi shard: centroid-relative points, parent orientation.
+        const flat: number[] = [];
+        for (const p of s.convex) flat.push(p[0], p[1], p[2]);
+        child.geometry = { type: 'convex', params: {}, vertices: flat };
+        child.transform.rotation = s.alignToParent
+          ? quatToEuler(bq)
+          : [...s.rotation];
+        child.transform.scale = [fs, fs, fs];
+        if (child.collider) {
+          child.collider.shape = 'convex';
+          child.collider.halfExtents = [
+            s.size[0] / 2, s.size[1] / 2, s.size[2] / 2,
+          ];
+          child.collider.offset = [0, 0, 0];
+        }
+      } else {
+        child.transform.rotation = [...s.rotation];
+        child.transform.scale = [s.size[0] * fs, s.size[1] * fs, s.size[2] * fs];
+        child.geometry = { type: 'box', params: { width: 1, height: 1, depth: 1 } };
+        if (child.collider) {
+          child.collider.shape = 'box';
+          child.collider.halfExtents = [0.5, 0.5, 0.5];
+          child.collider.offset = [0, 0, 0];
+        }
       }
       if (child.rigidBody) {
         child.rigidBody.bodyType = 'dynamic';
@@ -1802,6 +1830,7 @@ export class PhysicsRuntime {
     this.spawnedMeta.set(child.id, {
       id: child.id,
       geometry: structuredClone(child.geometry),
+      scale: [...child.transform.scale],
       baseColor: child.visual.baseColor,
       metalness: child.visual.metalness,
       roughness: child.visual.roughness,

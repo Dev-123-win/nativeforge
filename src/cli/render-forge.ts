@@ -3,14 +3,22 @@
  *
  * Pipeline: validate scene → start Vite → Electron offscreen loads
  * forge-scene.html → scene injected → deterministic frames → capturePage
- * raw BGRA pipe → FFmpeg (CPU or hardware encoder) → MP4.
+ * raw BGRA pipe → FFmpeg (CPU or hardware encoder) → MP4 → optional
+ * SFX post-step (synth WAV from the .sfx.json sidecar, second-pass mux).
  */
 import { createServer, type ViteDevServer } from 'vite';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
-import { migrateScene } from '../forge/core/types';
+import ffmpegStatic from 'ffmpeg-static';
+import { migrateScene, type ForgeScene } from '../forge/core/types';
+import {
+  buildMuxArgs,
+  renderSfxWav,
+  type SfxEvent,
+} from '../forge/audio/sfx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../');
@@ -21,6 +29,10 @@ export interface ForgeRenderCliOptions {
   audio?: string;
   gpuMode?: 'auto' | 'cpu' | 'gpu';
   quiet?: boolean;
+  /** Synthesize + mux the SFX track. Default true. */
+  sfx?: boolean;
+  /** SFX post-mix gain. Default 1. */
+  sfxVolume?: number;
 }
 
 export async function renderForge(
@@ -90,6 +102,12 @@ export async function renderForge(
     electronProc.on('close', async (code) => {
       await vite?.close();
       if (code === 0) {
+        // SFX post-step: best-effort, never fails the render.
+        try {
+          await muxSfxTrack(outputPath, scene, options, log);
+        } catch (err) {
+          log(`  SFX: skipped (${(err as Error).message}) — video unaffected`);
+        }
         log(`\n  🎉 Render completed: ${outputPath}\n`);
         resolve(outputPath);
       } else {
@@ -101,4 +119,77 @@ export async function renderForge(
       reject(err);
     });
   });
+}
+
+/**
+ * SFX post-step: render the headless collector's `.sfx.json` sidecar to a
+ * deterministic WAV and mux it as an AAC track. Best-effort by contract —
+ * throws are caught by the caller so audio can never fail a video render.
+ */
+export async function muxSfxTrack(
+  outputPath: string,
+  scene: ForgeScene,
+  options: ForgeRenderCliOptions,
+  log: (...args: unknown[]) => void = () => {},
+): Promise<boolean> {
+  if (options.sfx === false) return false;
+  if (options.audio) {
+    log('  SFX: skipped — user audio takes precedence');
+    return false;
+  }
+  const sidecar = `${outputPath}.sfx.json`;
+  if (!fs.existsSync(sidecar)) return false;
+
+  let events: SfxEvent[];
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(sidecar, 'utf8'));
+    if (!Array.isArray(parsed)) throw new Error('sidecar is not an array');
+    events = parsed.filter(
+      (e): e is SfxEvent =>
+        !!e && typeof e === 'object' && Number.isFinite((e as SfxEvent).frame),
+    );
+  } catch (err) {
+    log(`  SFX: sidecar unreadable (${(err as Error).message}) — skipping`);
+    return false;
+  }
+  if (events.length === 0) {
+    fs.rmSync(sidecar, { force: true });
+    return false;
+  }
+
+  const frames = Math.max(1, scene.render.recordEnd - scene.render.recordStart);
+  const wav = renderSfxWav(events, {
+    fps: scene.render.fps,
+    recordStart: scene.render.recordStart,
+    durationFrames: frames,
+    seed: scene.seed,
+    volume: options.sfxVolume ?? 1,
+  });
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-sfx-'));
+  try {
+    const wavPath = path.join(tmpDir, 'sfx.wav');
+    fs.writeFileSync(wavPath, wav);
+    const muxed = path.join(tmpDir, 'muxed.mp4');
+    const ffmpegPath = (ffmpegStatic as unknown as string) || 'ffmpeg';
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegPath, buildMuxArgs(outputPath, wavPath, muxed));
+      let errOut = '';
+      proc.stderr?.on('data', (d) => {
+        errOut += d.toString();
+      });
+      proc.on('close', (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`ffmpeg mux exited ${code}: ${errOut.slice(0, 300)}`)),
+      );
+      proc.on('error', reject);
+    });
+    fs.renameSync(muxed, outputPath);
+    log(`  SFX: mixed ${events.length} events → AAC track`);
+    return true;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(sidecar, { force: true });
+  }
 }

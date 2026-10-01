@@ -24,6 +24,8 @@ export interface ForgeBatchCliOptions {
   audio?: string;
   gpuMode?: 'auto' | 'cpu' | 'gpu';
   keepTemp?: boolean;
+  sfx?: boolean;
+  sfxVolume?: number;
 }
 
 export async function renderForgeBatch(
@@ -65,6 +67,8 @@ export async function renderForgeBatch(
           port: options.port,
           audio: options.audio,
           gpuMode: options.gpuMode,
+          sfx: options.sfx,
+          sfxVolume: options.sfxVolume,
         }),
       );
     }

@@ -311,6 +311,23 @@ function startForgeRenderer(sceneFile, outputPath, opts = {}) {
                     process.stdout.write(`\rProgress: ${currentFrame}/${durationInFrames} frames (${pct}%)`);
                 }
                 ffmpeg.stdin.end();
+                // SFX sidecar for the CLI's audio post-step. Skipped when the user
+                // supplied their own audio (that track wins) — and never fatal.
+                if (!opts.audioFile) {
+                    try {
+                        const sfx = await mainWindow.webContents.executeJavaScript(`window.__FORGE_SFX__ ? window.__FORGE_SFX__() : []`);
+                        if (Array.isArray(sfx) && sfx.length > 0) {
+                            fs.writeFileSync(`${outputPath}.sfx.json`, JSON.stringify(sfx));
+                            console.log(`  SFX: ${sfx.length} events → ${outputPath}.sfx.json`);
+                        }
+                        else {
+                            console.log('  SFX: no sound events — silent video');
+                        }
+                    }
+                    catch (err) {
+                        console.error('  SFX sidecar failed (video is unaffected):', err);
+                    }
+                }
                 console.log(`\n✅ Render complete! Saved to: ${outputPath}`);
                 setTimeout(() => electron_1.app.quit(), 1000);
             }

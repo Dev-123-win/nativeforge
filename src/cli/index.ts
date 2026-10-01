@@ -70,8 +70,10 @@ program
   .description('Render a Forge physics scene (.forge.json) to MP4')
   .option('--output <path>', 'Output file path (default: out/<sceneId>.mp4)')
   .option('--port <number>', 'Dev server port', '3101')
-  .option('--audio <path>', 'Audio file to mux (AAC)')
+  .option('--audio <path>', 'Audio file to mux (AAC) — overrides the SFX track')
   .option('--gpu-mode <mode>', 'Encoder selection: auto, cpu, gpu', 'auto')
+  .option('--no-sfx', 'Disable the synthesized SFX track')
+  .option('--sfx-volume <number>', 'SFX track volume', '1')
   .action(async (sceneFile: string, opts) => {
     const { renderForge } = await import('./render-forge.js');
     await renderForge(sceneFile, {
@@ -79,6 +81,8 @@ program
       port: parseInt(opts.port, 10),
       audio: opts.audio,
       gpuMode: opts.gpuMode,
+      sfx: opts.sfx,
+      sfxVolume: parseFloat(opts.sfxVolume),
     });
   });
 
@@ -90,8 +94,10 @@ program
   .option('--out-dir <dir>', 'Output directory (default: out/)')
   .option('--base-name <name>', 'Output filename stem (default: scene name)')
   .option('--port <number>', 'Dev server port', '3101')
-  .option('--audio <path>', 'Audio file to mux (AAC)')
+  .option('--audio <path>', 'Audio file to mux (AAC) — overrides the SFX track')
   .option('--gpu-mode <mode>', 'Encoder selection: auto, cpu, gpu', 'auto')
+  .option('--no-sfx', 'Disable the synthesized SFX track')
+  .option('--sfx-volume <number>', 'SFX track volume', '1')
   .action(async (sceneFile: string, opts) => {
     const { renderForgeBatch } = await import('./render-forge-batch.js');
     const files = await renderForgeBatch(sceneFile, {
@@ -101,6 +107,8 @@ program
       port: parseInt(opts.port, 10),
       audio: opts.audio,
       gpuMode: opts.gpuMode,
+      sfx: opts.sfx,
+      sfxVolume: parseFloat(opts.sfxVolume),
     });
     console.log(`\n✅ ${files.length} render(s) complete:`);
     for (const f of files) console.log(`   ${f}`);

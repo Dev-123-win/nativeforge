@@ -30,7 +30,14 @@ function noiseBuffer(c: AudioContext, seconds: number): AudioBuffer {
   return buf;
 }
 
-export type SynthName = 'pop' | 'impact' | 'crash' | 'blip' | 'click' | 'whoosh';
+export type SynthName =
+  | 'pop'
+  | 'impact'
+  | 'crash'
+  | 'blip'
+  | 'click'
+  | 'whoosh'
+  | 'snap';
 
 export function playSynth(name: string, intensity = 1): void {
   const now = performance.now();

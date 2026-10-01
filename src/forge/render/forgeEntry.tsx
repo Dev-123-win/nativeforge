@@ -30,6 +30,11 @@ declare global {
       durationInFrames: number;
     };
     __setFrame?: (f: number) => void;
+    __FORGE_SFX__?: () => Array<{
+      frame: number;
+      name: string;
+      intensity: number;
+    }>;
   }
 }
 
@@ -42,6 +47,11 @@ function status(msg: string): void {
 let phys: PhysicsRuntime | null = null;
 let view: ThreeRuntime | null = null;
 let scene: ForgeScene | null = null;
+// SFX event log for the export audio track. Recorded only for frames the
+// exporter actually captures (pre-roll simulation stays silent).
+const sfxEvents: Array<{ frame: number; name: string; intensity: number }> = [];
+let sfxFrame = 0;
+let sfxCollect = false;
 
 window.__FORGE_BOOT__ = async () => {
   try {
@@ -54,7 +64,28 @@ window.__FORGE_BOOT__ = async () => {
     const canvas = document.createElement('canvas');
     root.appendChild(canvas);
 
-    phys = new PhysicsRuntime({ templateProvider, onEvent: () => {} });
+    // Event → sound mapping mirrors the editor (ForgeApp.handleEvent).
+    phys = new PhysicsRuntime({
+      templateProvider,
+      onEvent: (e) => {
+        if (!sfxCollect) return;
+        if (e.type === 'pop') {
+          sfxEvents.push({ frame: sfxFrame, name: 'pop', intensity: 1 });
+        } else if (e.type === 'fracture') {
+          sfxEvents.push({
+            frame: sfxFrame,
+            name: 'crash',
+            intensity: e.intensity ?? 0.9,
+          });
+        } else if (e.type === 'sound') {
+          sfxEvents.push({
+            frame: sfxFrame,
+            name: e.name ?? 'blip',
+            intensity: e.intensity ?? 1,
+          });
+        }
+      },
+    });
     await phys.loadScene(scene);
 
     // Headless viewport: no selection, no gizmo edits, stats to console.
@@ -77,7 +108,7 @@ window.__FORGE_BOOT__ = async () => {
       showStats: false,
     });
     // Shadow catcher + grid stay hidden for clean frames; keep the catcher.
-    renderFrame(scene.render.recordStart);
+    renderFrame(scene.render.recordStart, false);
 
     const frames = Math.max(1, scene.render.recordEnd - scene.render.recordStart);
     window.__FORGE_META__ = {
@@ -95,8 +126,10 @@ window.__FORGE_BOOT__ = async () => {
   }
 };
 
-function renderFrame(sceneFrame: number): void {
+function renderFrame(sceneFrame: number, collect: boolean): void {
   if (!phys || !view || !scene) return;
+  sfxFrame = sceneFrame;
+  sfxCollect = collect;
   phys.gotoFrame(sceneFrame);
   const transforms = phys.transforms();
   const map = new Map(transforms.map((t) => [t.id, t]));
@@ -118,8 +151,10 @@ function renderFrame(sceneFrame: number): void {
 
 window.__setFrame = (f: number) => {
   if (!scene) return;
-  renderFrame(scene.render.recordStart + Math.round(f));
+  renderFrame(scene.render.recordStart + Math.round(f), true);
 };
+
+window.__FORGE_SFX__ = () => sfxEvents;
 
 // Keep THREE referenced for bundlers that tree-shake aggressively.
 void THREE;

@@ -123,6 +123,8 @@ Vite serves forge-scene.html → scene injected via executeJavaScript
    → __FORGE_BOOT__ → per frame __setFrame(f) → capturePage → FFmpeg
    ▼
 H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
+   ▼ (unless --no-sfx)
+SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
 ```
 
 - `electron/main.ts` keeps the MotionFlow recipe **byte-identical**
@@ -130,9 +132,14 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   bitrate VBV caps.
 - Record range (`recordStart..recordEnd`) maps to output frames; duration,
   resolution, FPS come from the scene's render settings.
+- Sound: the headless page logs pop/fracture/sound events per frame
+  (same mapping as the editor); the CLI renders them to a deterministic
+  WAV with a sample-level port of the WebAudio recipes (`audio/sfx.ts`,
+  seeded noise, 45 ms throttle mirror) and muxes AAC in a second pass.
+  `--audio` overrides the SFX track; `--no-sfx` / `--sfx-volume` tune it.
 - Current limits (documented, not hidden): H.264 only (HEVC/VP9 live in
   the schema as future values; the pipe is H.264 — see §8), no alpha
-  (yuv420p), silent unless `--audio` is passed.
+  (yuv420p), mono non-spatial SFX (listener position is future work).
 - Multi-seed batches: `render-forge-batch scene.forge.json --seeds 1-5
   --out-dir out/ [--base-name clip]` renders one MP4 per seed
   (`<base>-seed<seed>.mp4`), sequentially so Electron instances never
@@ -157,6 +164,8 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   export/delete; demo + 100/1k/5k/10k benchmark starters.
 - `sound.ts` — zero-asset WebAudio synth
   (pop/impact/crash/whoosh/blip/snap; snap = joint crack).
+- `audio/sfx.ts` — offline port of those recipes to deterministic WAV
+  for export, plus the AAC second-pass mux args builder.
 
 ## 8. Known limits & roadmap (explicitly not faked)
 

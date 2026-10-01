@@ -68,6 +68,7 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 | `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
 | `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
 | `render/director.ts` | Pure keyframe eval: camera poses + motor targets + driver poses per frame | No I/O; scrub/replay/export evaluate identically |
+| `render/lanes.ts` | Pure lane derivation, frame↔pixel mapping, key move/delete | Applied by Timeline through store upserts; unit-tested |
 | `emitters.ts` | Rate/burst/window/lifetime/maxAlive + oldest-recycle pooling | Deterministic spawn schedules |
 | `events.ts` | 8 triggers × 13 actions, one-shot per run | Engine-agnostic, unit-tested |
 | `cache.ts` | Keyframed snapshots + physics-hash invalidation | **Stale cache can never render**: hash mismatch drops everything |
@@ -159,7 +160,10 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
   keys, and captures live body poses as driver keys (Advanced reveals
   numeric channel values).
 - `Timeline.tsx` — transport, deterministic scrub, record band, event
-  markers, cache size.
+  markers, cache size, and keyframe lanes for every Director track
+  (click: jump · drag: move · double-click: delete · lane click: seek ·
+  dot: enable). Drags quantize to integer frames and occupied frames
+  block the drag so keys are never merged away.
 - `SceneLibrary.tsx` — cards with thumbnail/meta; open/duplicate/rename/
   export/delete; demo + 100/1k/5k/10k benchmark starters.
 - `sound.ts` — zero-asset WebAudio synth
@@ -188,7 +192,7 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
   motor tracks drive hinge/slider joints only and require the joint's own
   motor to be enabled; driver tracks require kinematic bodies (one-click
   convert in the UI); very fast drivers can tunnel through thin dynamics
-  (raise substeps); keyframe lanes on the Timeline are future work.
+  (raise substeps).
 
 ## 9. Extending
 

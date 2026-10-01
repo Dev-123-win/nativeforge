@@ -30,6 +30,21 @@ import { colliderVolume } from './materials';
 export const FLUID_MAX_PARTICLES = 6000;
 /** Internal SPH substeps per physics frame (stability for stiff water). */
 export const FLUID_SUBSTEPS = 6;
+
+/**
+ * CFL stability governor for the pressure stiffness. Explicit SPH needs the
+ * sound-crossing number c*dtSub/h <= ~1 (c = sqrt(k), h = 1.5*s); finer
+ * spacings must run softer or pressure waves outrun the grid and the run
+ * explodes into the velocity clamp. Returns the largest stable k for the
+ * given spacing and substep dt (0.9 safety factor). At default spacing this
+ * is ~14700, far above the UI range, so normal scenes are untouched.
+ */
+export function cflMaxStiffness(spacing: number, dtSub: number): number {
+  if (!Number.isFinite(spacing) || !(dtSub > 0)) return 1;
+  const c = (0.9 * 1.5 * spacing) / Math.max(1e-6, dtSub);
+  const k = c * c;
+  return Number.isFinite(k) ? Math.max(1, k) : 1;
+}
 /** XSPH velocity-smoothing factor (fixed constant). */
 const XSPH_EPSILON = 0.15;
 /** Maps artistic viscosity (0..5) to SPH dynamic-viscosity scale. */
@@ -200,7 +215,10 @@ export function bodyVolumeAndRadius(
   );
   let radius: number;
   if (collider.shape === 'sphere') {
-    radius = collider.radius * Math.max(scale[0], scale[1], scale[2]);
+    // abs: mirrored (negative-scale) bodies span positive extents too.
+    radius =
+      collider.radius *
+      Math.max(Math.abs(scale[0]), Math.abs(scale[1]), Math.abs(scale[2]));
   } else if (collider.shape === 'box') {
     const hx = collider.halfExtents[0] * scale[0];
     const hy = collider.halfExtents[1] * scale[1];
@@ -211,7 +229,8 @@ export function bodyVolumeAndRadius(
     collider.shape === 'cylinder' ||
     collider.shape === 'cone'
   ) {
-    const r = collider.radius * Math.max(scale[0], scale[2]);
+    const r =
+      collider.radius * Math.max(Math.abs(scale[0]), Math.abs(scale[2]));
     const hy = (collider.height / 2) * scale[1];
     radius = Math.sqrt(r * r + hy * hy);
   } else {
@@ -226,6 +245,57 @@ export function bodyVolumeAndRadius(
 
 /** Kernel support radius as a multiple of particle spacing (h = 1.5·s). */
 const SUPPORT_RATIO = 1.5;
+
+/**
+ * Harden a seed def against hand-written/imported garbage (NaN, negatives,
+ * infinities). Every numeric field gets a finite default inside the
+ * solver-safe range, so malformed scenes degrade to calm water instead of
+ * NaN explosions or vanishing oceans. Normal UI-built scenes pass through
+ * unchanged.
+ */
+function sanitizeSeedDef(def: FluidVolumeSeed): FluidVolumeSeed {
+  const num = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  const clamp = (v: number, lo: number, hi: number): number =>
+    Math.min(hi, Math.max(lo, v));
+  const vec = (v: unknown, fallback: number): Vec3 => {
+    const a = v as [unknown, unknown, unknown] | undefined;
+    return [
+      num(a?.[0], fallback),
+      num(a?.[1], fallback),
+      num(a?.[2], fallback),
+    ];
+  };
+  const q = def.quat as unknown as
+    | [unknown, unknown, unknown, unknown]
+    | undefined;
+  const quat: [number, number, number, number] =
+    q !== undefined &&
+    [q[0], q[1], q[2], q[3]].every(
+      (c): c is number => typeof c === 'number' && Number.isFinite(c),
+    )
+      ? [q[0] as number, q[1] as number, q[2] as number, q[3] as number]
+      : [0, 0, 0, 1];
+  const c = def.color as unknown as [unknown, unknown, unknown] | undefined;
+  return {
+    id: def.id,
+    center: vec(def.center, 0),
+    quat,
+    half: vec(def.half, 0).map((v) => Math.max(0, v)) as Vec3,
+    openTop: def.openTop === true,
+    spacing: clamp(num(def.spacing, 0.25), 0.03, 2),
+    density: clamp(num(def.density, 1000), 1, 20000),
+    stiffness: Math.max(1, num(def.stiffness, 1000)),
+    viscosity: clamp(num(def.viscosity, 0.5), 0, 8),
+    fill: clamp(num(def.fill, 0.8), 0, 1),
+    maxParticles: Math.max(1, Math.floor(num(def.maxParticles, 4000))),
+    color: [
+      clamp(num(c?.[0], 0.18), 0, 1),
+      clamp(num(c?.[1], 0.5), 0, 1),
+      clamp(num(c?.[2], 1), 0, 1),
+    ],
+  };
+}
 
 /**
  * Ideal-lattice kernel sum ΣW·s³ for a cubic lattice at h = 1.5·s, computed
@@ -335,13 +405,14 @@ export class FluidSystem {
     return this.col.subarray(0, this.n * 3);
   }
 
-  /** Mean particle radius for rendering (max support / 4). */
-  renderRadius(): number {
-    let maxH = 0;
-    for (let i = 0; i < this.n; i++) {
-      if (this.h[i] > maxH) maxH = this.h[i];
-    }
-    return maxH > 0 ? maxH / 4 : 0.1;
+  /**
+   * Live per-particle support radii (h = 1.5 * spacing). Renderers derive
+   * the droplet radius as h/3 (= 0.5 * spacing, touching spheres) per
+   * particle, so mixed-spacing volumes each render at their own correct
+   * size. Zero-alloc view, valid until the next step/cull.
+   */
+  supportView(): Float32Array {
+    return this.h.subarray(0, this.n);
   }
 
   clear(): void {
@@ -353,12 +424,20 @@ export class FluidSystem {
 
   /**
    * Seed particles on a jittered lattice inside each volume's fill region.
-   * Deterministic in (rootSeed, volume defs) — same input, same lattice.
+   * Deterministic in (rootSeed, volume defs, dtSub): same input, same
+   * lattice. dtSub is the physics substep dt the run will use (frame dt / 6);
+   * it drives the CFL stiffness governor so fine spacings seed soft enough
+   * to stay stable. Defaults to the 60 fps substep.
    */
-  seedVolumes(rootSeed: string | number, defs: FluidVolumeSeed[]): void {
+  seedVolumes(
+    rootSeed: string | number,
+    defs: FluidVolumeSeed[],
+    dtSub: number = 1 / 360,
+  ): void {
     this.clear();
     const kernelSum = latticeKernelSum();
-    defs.forEach((def, vi) => {
+    defs.forEach((rawDef, vi) => {
+      const def = sanitizeSeedDef(rawDef);
       const rng = new Rng(`${String(rootSeed)}:fluid:${def.id}:${vi}`);
       const spacing = Math.min(2, Math.max(0.03, def.spacing));
       const support = spacing * SUPPORT_RATIO;
@@ -384,6 +463,8 @@ export class FluidSystem {
       const m =
         (def.density * spacing * spacing * spacing) / kernelSum;
       const pvol = spacing * spacing * spacing;
+      // CFL-governed stiffness: fine lattices run softer (see cflMaxStiffness).
+      const stiffK = Math.min(def.stiffness, cflMaxStiffness(spacing, dtSub));
       let placed = 0;
       outer: for (let iy = 0; iy < ny; iy++) {
         for (let ix = 0; ix < nx; ix++) {
@@ -414,7 +495,7 @@ export class FluidSystem {
             this.h[i] = support;
             this.mass[i] = m;
             this.restRho[i] = def.density;
-            this.pressK[i] = Math.max(1, def.stiffness);
+            this.pressK[i] = Math.max(1, stiffK);
             this.visc[i] = Math.min(8, Math.max(0, def.viscosity));
             this.pVol[i] = pvol;
             this.volOf[i] = vi;
@@ -686,8 +767,8 @@ export class FluidSystem {
       this.rho[i] = rho;
       const over = rho - this.restRho[i];
       // Linear EOS with tensile clamp. (Unclamped Tait γ=7/γ=2 tried: γ=7
-      // explodes under explicit integration; γ=2 scatters. Void control
-      // comes from δ-density-diffusion below instead.)
+      // explodes under explicit integration; Tait-2 scatters. Layer-collapse
+      // control comes from the short-range viscoelastic contact below.)
       this.press[i] = over > 0 ? this.pressK[i] * over : 0;
     }
     // Extrapolate ghost pressures for the force pass (Adami-style).
@@ -761,13 +842,13 @@ export class FluidSystem {
                 const cbar = (this.snd[i] + this.snd[s]) / 2;
                 // Clamp the approach rate: pathological close-pair spikes
                 // must not dwarf the physical pressure.
-                const mu = Math.max(
+                const relax = Math.max(
                   (hij * vdotx) / (r2 + 0.01 * hij * hij),
                   -5 * cbar,
                 );
                 const rhobar = (rhoi + rhoj) / 2;
                 pterm +=
-                  (-alphaE * cbar * mu + ART_VISC_BETA * mu * mu) /
+                  (-alphaE * cbar * relax + ART_VISC_BETA * relax * relax) /
                   rhobar;
               }
               const g = spikyGrad(r, hij) * pterm * mj;
@@ -779,19 +860,26 @@ export class FluidSystem {
               // pressure has a near-nullspace on the layer-interleaving mode
               // (neighbor-count deficit cancels closeness surplus, so SPH reads
               // ~rest density while true density hits 1.7x), letting the lattice
-              // sediment into a pile + hollow. Dormant at rest spacing.
+              // sediment into a pile + hollow. Dormant at rest spacing. The
+              // dashpot holds a CONSTANT ratio (zeta = 0.25, mass-independent):
+              // it applies symmetrically to both particles of a pair, doubling
+              // in relative coordinates, so critical damping (zeta = 1) parks
+              // 2*c*dt at the symplectic stability limit and fine spacings
+              // self-excite exponentially. Zeta 0.25 is stable across the whole
+              // UI spacing range and preserves the calibrated coupled behavior
+              // (wood plunge/recovery). The 0.9/dt clamp is belt-and-braces.
               if (r > 1e-9) {
                 const sep = hij / SUPPORT_RATIO;
                 if (r < sep) {
                   const stiff = 6000 / hij;
-                  const damp = 2 * Math.sqrt(stiff * mj);
+                  const damp = Math.min(0.5 * Math.sqrt(stiff), 0.9 / dt);
                   const overlap = sep - r;
                   const nx = dx / r; const ny = dy / r; const nz = dz / r;
                   const rvx = vx - this.vel[s * 3];
                   const rvy = vy - this.vel[s * 3 + 1];
                   const rvz = vz - this.vel[s * 3 + 2];
                   const vn = rvx * nx + rvy * ny + rvz * nz;
-                  const f = (stiff * overlap - (damp / mj) * vn) / r;
+                  const f = (stiff * overlap - damp * vn) / r;
                   ax += f * dx;
                   ay += f * dy;
                   az += f * dz;
@@ -913,10 +1001,8 @@ export class FluidSystem {
       for (let axis = 0; axis < 3; axis++) {
         const lim = v.half[axis] - m;
         if (lim < 0) continue;
-        if (v.openTop && axis === 1 && local[axis] >= 0) {
-          vw[axis] *= 1;
-          continue;
-        }
+        // Open tops have no ceiling: splashes above the rim keep velocity.
+        if (v.openTop && axis === 1 && local[axis] >= 0) continue;
         if (Math.abs(Math.abs(local[axis]) - lim) < 1e-6) {
           const inward =
             (local[axis] < 0 && vw[axis] < 0) ||
@@ -944,7 +1030,13 @@ export class FluidSystem {
           const dz = this.pos[i * 3 + 2] - col.center[2];
           const rr = col.radius + rp;
           const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 >= rr * rr || d2 < 1e-12) continue;
+          if (d2 >= rr * rr) continue;
+          if (d2 < 1e-12) {
+            // Dead-center: push out along +x (deterministic, measure-zero).
+            this.pos[i * 3] += rr;
+            this.collideVelocity(i, [1, 0, 0], col);
+            continue;
+          }
           const d = Math.sqrt(d2);
           const nx = dx / d; const ny = dy / d; const nz = dz / d;
           const push = rr - d;

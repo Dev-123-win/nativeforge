@@ -498,12 +498,17 @@ export class ThreeRuntime {
     return true;
   }
 
-  /** Push fresh SPH particle state (called every frame, after transforms). */
+  /**
+   * Push fresh SPH particle state (called every frame, after transforms).
+   * Droplet radius is supports[i]/3 (= 0.5 * spacing, touching spheres) per
+   * particle so mixed-spacing volumes render at their own correct size.
+   * Colors arrive as sRGB and are converted to the working color space.
+   */
   syncFluid(
     positions: Float32Array,
     colors: Float32Array,
     count: number,
-    radius: number,
+    supports: Float32Array,
   ): void {
     const mesh = this.fluidMesh;
     if (!mesh) return;
@@ -516,10 +521,18 @@ export class ThreeRuntime {
     const d = this.fluidDummy;
     for (let i = 0; i < n; i++) {
       d.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-      d.scale.setScalar(Math.max(0.001, radius));
+      d.scale.setScalar(Math.max(0.001, supports[i] / 3));
       d.updateMatrix();
       mesh.setMatrixAt(i, d.matrix);
-      mesh.setColorAt(i, tmpC.setRGB(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]));
+      mesh.setColorAt(
+        i,
+        tmpC.setRGB(
+          colors[i * 3],
+          colors[i * 3 + 1],
+          colors[i * 3 + 2],
+          THREE.SRGBColorSpace,
+        ),
+      );
     }
     mesh.count = n;
     mesh.instanceMatrix.needsUpdate = true;

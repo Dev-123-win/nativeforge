@@ -94,7 +94,7 @@ Fluid rule: each volume seeds a jittered lattice (mass calibrated so the
 lattice reads exactly rest density); buoyancy on a body is the
 void-corrected submerged fraction × displaced water weight plus quadratic
 (Cd = 1) and linear drag. Wood (600 kg/m³) floats, steel sinks; a 2 m drop
-plunges ≈ 0.4 m before drag stops it (covered by tests).
+plunges ≈ 0.7 m before drag stops it (covered by tests).
 
 ## 5. Viewport (`three/`)
 
@@ -195,7 +195,10 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
   collider push-out, particle momentum does not feed back into bodies);
   non-box/sphere colliders use their bounding sphere for the fluid; ~10%
   micro-voids remain (planned: particle shifting), so deep impact plunges
-  read slightly deep. FLIP / free-surface reconstruction planned.
+  read slightly deep. Pressure stiffness is auto-governed by the CFL condition
+  (c*dt/h ≤ 0.9), so fine spacings run softer than the stiffness slider asks —
+  the UI range stays explosion-free at any fps. FLIP / free-surface
+  reconstruction planned.
 - Voronoi fracture tiles the object's axis-aligned bounds — exact for
   boxes, an AABB approximation for curved inputs; capped at 48 cells per
   break. Chunk modes remain for cheap bursts.

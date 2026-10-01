@@ -42,6 +42,7 @@ import { evalDriverTrack, evalMotorTrack } from '../render/director';
 import { SimCache, scenePhysicsHash } from './cache';
 import {
   FluidSystem,
+  FLUID_SUBSTEPS,
   bodyVolumeAndRadius,
   hexToRgbFluid,
   type FluidCollider,
@@ -160,7 +161,7 @@ function fluidSigOf(scene: ForgeScene): string {
         `${o.fluid.maxParticles},${o.fluid.openTop ? 1 : 0}`,
     );
   }
-  return `${scene.seed}::${rows.join(';')}`;
+  return `${scene.seed}::fps${scene.world.renderFps}::${rows.join(';')}`;
 }
 
 /** Broadphase: is a sphere at t with radius r near any fluid volume? */
@@ -414,7 +415,7 @@ export class PhysicsRuntime {
   private activeContacts = new Map<string, { a: string; b: string }>();
   private frameCollisions: CollisionRecord[] = [];
   private contactsDebug: Vec3[] = [];
-  private lastSoundAt = 0;
+  private lastSoundAt = -1; // sim-seconds; -1 lets the first impact sing
   private stepMs = 0;
   private physicsHash = '';
 
@@ -464,6 +465,7 @@ export class PhysicsRuntime {
     this.brokenJoints.clear();
     this.frame = 0;
     this.simTime = 0;
+    this.lastSoundAt = -1;
     this.spawnCounter = 0;
     this.frameCollisions = [];
     // Clone events so `fired` flags stay runtime-local.
@@ -1403,9 +1405,10 @@ export class PhysicsRuntime {
             this.fractureObject(b);
           }
           if (speed > 2.5) {
-            const now = performance.now();
-            if (now - this.lastSoundAt > 60) {
-              this.lastSoundAt = now;
+            // Sim-time throttle (NOT wall clock): export audio must be
+            // bit-identical across runs, and scrub-replay must re-emit.
+            if (this.simTime - this.lastSoundAt > 0.06) {
+              this.lastSoundAt = this.simTime;
               this.opts.onEvent({
                 type: 'sound', name: 'impact', point,
                 intensity: Math.min(1, speed / 12),
@@ -2037,6 +2040,8 @@ export class PhysicsRuntime {
   private restoreAux(aux: AuxState): void {
     if (!this.scene) return;
     this.simTime = aux.simTime;
+    // Re-arm the impact-sound throttle: scrub-replay re-emits deterministically.
+    this.lastSoundAt = aux.simTime;
     this.spawnCounter = aux.spawnCounter;
     this.poppedSet = new Set(aux.popped);
     this.fracturedSet = new Set(aux.fractured);
@@ -2215,6 +2220,7 @@ export class PhysicsRuntime {
     this.brokenJoints.clear();
     this.frame = 0;
     this.simTime = 0;
+    this.lastSoundAt = -1;
     this.spawnCounter = 0;
     this.events = scene.events.map((e) => ({ ...e, fired: false }));
     this.eventRng = new Rng(`${scene.seed}:events`);
@@ -2265,7 +2271,8 @@ export class PhysicsRuntime {
         openTop: o.fluid.openTop,
       });
     }
-    this.fluid.seedVolumes(this.scene.seed, defs);
+    const dtSub = 1 / Math.max(1, this.scene.world.renderFps) / FLUID_SUBSTEPS;
+    this.fluid.seedVolumes(this.scene.seed, defs, dtSub);
     this.fluidSig = fluidSigOf(this.scene);
   }
 
@@ -2434,13 +2441,13 @@ export class PhysicsRuntime {
     positions: Float32Array;
     colors: Float32Array;
     count: number;
-    radius: number;
+    supports: Float32Array;
   } {
     return {
       positions: this.fluid.positions(),
       colors: this.fluid.colors(),
       count: this.fluid.count,
-      radius: this.fluid.renderRadius(),
+      supports: this.fluid.supportView(),
     };
   }
 

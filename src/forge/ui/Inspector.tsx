@@ -6,13 +6,22 @@ import React from 'react';
 import { useForge } from '../core/store';
 import type {
   ActionType,
+  CameraTrack,
   ConstraintType,
+  EasingName,
   ForgeObject,
+  MotorTrack,
   TriggerType,
   UiLevel,
   Vec3,
 } from '../core/types';
-import { makeConstraint, uid } from '../core/types';
+import {
+  EASING_NAMES,
+  makeCameraTrack,
+  makeConstraint,
+  makeMotorTrack,
+  uid,
+} from '../core/types';
 import {
   autoMass,
   colliderVolume,
@@ -37,11 +46,17 @@ export interface RenderActions {
   downloadFrame: () => void;
 }
 
-type Tab = 'object' | 'world' | 'events' | 'joints' | 'render';
+export interface DirectorActions {
+  goToFrame: (f: number) => void;
+  captureCamera: () => import('../render/director').CameraPose | null;
+}
+
+type Tab = 'object' | 'world' | 'events' | 'joints' | 'director' | 'render';
 
 export function Inspector(props: {
   renderActions: RenderActions;
   brokenJoints: string[];
+  director: DirectorActions;
 }) {
   const selection = useForge((s) => s.selection);
   const uiLevel = useForge((s) => s.uiLevel);
@@ -63,7 +78,7 @@ export function Inspector(props: {
         ))}
       </div>
       <div className="forge-inspector-tabs">
-        {(['object', 'world', 'events', 'joints', 'render'] as Tab[]).map((t) => (
+        {(['object', 'world', 'events', 'joints', 'director', 'render'] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -79,6 +94,7 @@ export function Inspector(props: {
         {tab === 'world' && <WorldTab level={uiLevel} />}
         {tab === 'events' && <EventsTab level={uiLevel} />}
         {tab === 'joints' && <JointsTab level={uiLevel} broken={props.brokenJoints} />}
+        {tab === 'director' && <DirectorTab level={uiLevel} actions={props.director} />}
         {tab === 'render' && <RenderTab level={uiLevel} actions={props.renderActions} />}
       </div>
       {selection.length > 0 && tab === 'object' && <SelectionFooter />}
@@ -1139,6 +1155,359 @@ function JointsTab({ level, broken }: { level: UiLevel; broken: string[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ─── Director tab: camera moves + motor choreography ─────────────────────── */
+
+function distinctFrames(t: CameraTrack): number[] {
+  const frames = new Set<number>();
+  for (const k of t.position) frames.add(k.frame);
+  for (const k of t.target) frames.add(k.frame);
+  for (const k of t.fov) frames.add(k.frame);
+  return [...frames].sort((a, b) => a - b);
+}
+
+function DirectorTab({ level, actions }: { level: UiLevel; actions: DirectorActions }) {
+  const scene = useForge((s) => s.activeScene);
+  const frame = useForge((s) => s.playback.frame);
+  const upsertCameraTrack = useForge((s) => s.upsertCameraTrack);
+  const removeCameraTrack = useForge((s) => s.removeCameraTrack);
+  const upsertMotorTrack = useForge((s) => s.upsertMotorTrack);
+  const removeMotorTrack = useForge((s) => s.removeMotorTrack);
+  const [motorJoint, setMotorJoint] = React.useState('');
+  const [motorValue, setMotorValue] = React.useState(0);
+  if (!scene) return null;
+
+  const cam =
+    scene.cameras.find((c) => c.id === scene.activeCameraId) ?? scene.cameras[0];
+  const camTrack =
+    (cam && scene.cameraTracks.find((t) => t.cameraId === cam.id)) || null;
+  const motorJoints = scene.constraints.filter(
+    (c) => c.type === 'hinge' || c.type === 'slider',
+  );
+
+  const addCamKey = () => {
+    if (!cam) return;
+    const pose = actions.captureCamera();
+    if (!pose) return;
+    const t = camTrack ?? makeCameraTrack(`${cam.name} move`, cam.id);
+    const drop = <K extends { frame: number }>(ks: K[]): K[] =>
+      ks.filter((k) => k.frame !== frame);
+    upsertCameraTrack({
+      ...t,
+      position: [
+        ...drop(t.position),
+        { frame, value: [...pose.position] as Vec3, easing: 'smooth' as EasingName },
+      ],
+      target: [
+        ...drop(t.target),
+        { frame, value: [...pose.target] as Vec3, easing: 'smooth' as EasingName },
+      ],
+      fov: [
+        ...drop(t.fov),
+        { frame, value: pose.fov, easing: 'smooth' as EasingName },
+      ],
+    });
+  };
+
+  const setCamEasing = (t: CameraTrack, at: number, easing: EasingName) => {
+    const map = <K extends { frame: number; easing: EasingName }>(ks: K[]): K[] =>
+      ks.map((k) => (k.frame === at ? { ...k, easing } : k));
+    upsertCameraTrack({
+      ...t,
+      position: map(t.position),
+      target: map(t.target),
+      fov: map(t.fov),
+    });
+  };
+
+  const deleteCamKey = (t: CameraTrack, at: number) => {
+    const drop = <K extends { frame: number }>(ks: K[]): K[] =>
+      ks.filter((k) => k.frame !== at);
+    upsertCameraTrack({
+      ...t,
+      position: drop(t.position),
+      target: drop(t.target),
+      fov: drop(t.fov),
+    });
+  };
+
+  const addMotorTrack = () => {
+    const j = scene.constraints.find((c) => c.id === motorJoint);
+    if (!j) return;
+    upsertMotorTrack(makeMotorTrack(`${j.name} motion`, j.id));
+  };
+
+  const addMotorKey = (t: MotorTrack) => {
+    upsertMotorTrack({
+      ...t,
+      keys: [
+        ...t.keys.filter((k) => k.frame !== frame),
+        { frame, value: motorValue, easing: 'smooth' as EasingName },
+      ],
+    });
+  };
+
+  return (
+    <div>
+      <Section title="Camera move" defaultOpen>
+        {!cam && <p className="forge-hint">No camera in this scene.</p>}
+        {cam && !camTrack && (
+          <>
+            <p className="forge-hint">
+              Orbit to a start pose, key it, scrub forward, orbit to an end
+              pose, key it — playback and export fly the move.
+            </p>
+            <button type="button" className="forge-btn small primary" onClick={addCamKey}>
+              ＋ Key {cam.name} @ f{frame}
+            </button>
+          </>
+        )}
+        {cam && camTrack && (
+          <div className="forge-event-card">
+            <div className="forge-event-head">
+              <input
+                type="text"
+                className="forge-text"
+                value={camTrack.name}
+                onChange={(e) =>
+                  upsertCameraTrack({ ...camTrack, name: e.target.value })
+                }
+              />
+              <button
+                type="button"
+                className="forge-btn small danger"
+                onClick={() => removeCameraTrack(camTrack.id)}
+              >
+                ×
+              </button>
+            </div>
+            <Toggle
+              label="Enabled (drives camera)"
+              checked={camTrack.enabled}
+              onChange={(v) => upsertCameraTrack({ ...camTrack, enabled: v })}
+            />
+            <button type="button" className="forge-btn small primary" onClick={addCamKey}>
+              ＋ Key @ f{frame} (capture viewport)
+            </button>
+            {distinctFrames(camTrack).map((f) => {
+              const easing =
+                camTrack.position.find((k) => k.frame === f)?.easing ?? 'smooth';
+              const pos = camTrack.position.find((k) => k.frame === f);
+              const tgt = camTrack.target.find((k) => k.frame === f);
+              const fv = camTrack.fov.find((k) => k.frame === f);
+              return (
+                <div key={f} className="forge-key-row">
+                  <button
+                    type="button"
+                    className="forge-btn small"
+                    onClick={() => actions.goToFrame(f)}
+                    title="Jump to keyframe"
+                  >
+                    f{f}
+                  </button>
+                  <Select
+                    label=""
+                    value={easing}
+                    options={[...EASING_NAMES]}
+                    onChange={(v) => setCamEasing(camTrack, f, v as EasingName)}
+                  />
+                  <button
+                    type="button"
+                    className="forge-btn small danger"
+                    onClick={() => deleteCamKey(camTrack, f)}
+                  >
+                    ×
+                  </button>
+                  {visible('advanced', level) && pos && tgt && fv && (
+                    <div className="forge-key-values">
+                      <Vec3Input
+                        label="pos"
+                        value={pos.value}
+                        onChange={(v) =>
+                          upsertCameraTrack({
+                            ...camTrack,
+                            position: camTrack.position.map((k) =>
+                              k.frame === f ? { ...k, value: v } : k,
+                            ),
+                          })
+                        }
+                      />
+                      <Vec3Input
+                        label="target"
+                        value={tgt.value}
+                        onChange={(v) =>
+                          upsertCameraTrack({
+                            ...camTrack,
+                            target: camTrack.target.map((k) =>
+                              k.frame === f ? { ...k, value: v } : k,
+                            ),
+                          })
+                        }
+                      />
+                      <Num
+                        label="fov"
+                        value={fv.value}
+                        min={5}
+                        max={170}
+                        onChange={(v) =>
+                          upsertCameraTrack({
+                            ...camTrack,
+                            fov: camTrack.fov.map((k) =>
+                              k.frame === f ? { ...k, value: v } : k,
+                            ),
+                          })
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {distinctFrames(camTrack).length === 0 && (
+              <p className="forge-hint">No keys yet — capture at least two.</p>
+            )}
+            <p className="forge-hint">
+              While enabled, the track owns the camera during playback and
+              export. Pause to orbit freely; the next frame change re-applies
+              the move.
+            </p>
+          </div>
+        )}
+      </Section>
+
+      <Section title="Motor choreography" defaultOpen>
+        {motorJoints.length === 0 && (
+          <p className="forge-hint">
+            No hinge or slider joints yet — link two objects in the Joints tab
+            first.
+          </p>
+        )}
+        {motorJoints.length > 0 && (
+          <div className="forge-event-card">
+            <Select
+              label="Joint"
+              value={motorJoint}
+              options={motorJoints.map((j) => j.id)}
+              onChange={setMotorJoint}
+            />
+            <button
+              type="button"
+              className="forge-btn small primary"
+              disabled={!motorJoint}
+              onClick={addMotorTrack}
+            >
+              ＋ Motor track
+            </button>
+          </div>
+        )}
+        {scene.motorTracks.map((t) => {
+          const j = scene.constraints.find((c) => c.id === t.jointId);
+          return (
+            <div key={t.id} className="forge-event-card">
+              <div className="forge-event-head">
+                <input
+                  type="text"
+                  className="forge-text"
+                  value={t.name}
+                  onChange={(e) => upsertMotorTrack({ ...t, name: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="forge-btn small danger"
+                  onClick={() => removeMotorTrack(t.id)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="forge-badges">
+                <span className="forge-badge">{j ? j.name : 'joint deleted'}</span>
+                {j && <span className="forge-badge">{j.motorMode}</span>}
+                {j && !j.motorEnabled && (
+                  <span className="forge-badge inst">motor off — enable in Joints tab</span>
+                )}
+              </div>
+              <Toggle
+                label="Enabled"
+                checked={t.enabled}
+                onChange={(v) => upsertMotorTrack({ ...t, enabled: v })}
+              />
+              <Num
+                label={j?.motorMode === 'velocity' ? 'Speed @ key' : 'Target @ key'}
+                value={motorValue}
+                min={-30}
+                max={30}
+                onChange={setMotorValue}
+              />
+              <button
+                type="button"
+                className="forge-btn small primary"
+                onClick={() => addMotorKey(t)}
+              >
+                ＋ Key @ f{frame}
+              </button>
+              {t.keys.map((k) => (
+                <div key={k.frame} className="forge-key-row">
+                  <button
+                    type="button"
+                    className="forge-btn small"
+                    onClick={() => actions.goToFrame(k.frame)}
+                  >
+                    f{k.frame}
+                  </button>
+                  <Num
+                    label=""
+                    value={k.value}
+                    min={-1000}
+                    max={1000}
+                    onChange={(v) =>
+                      upsertMotorTrack({
+                        ...t,
+                        keys: t.keys.map((x) =>
+                          x.frame === k.frame ? { ...x, value: v } : x,
+                        ),
+                      })
+                    }
+                  />
+                  <Select
+                    label=""
+                    value={k.easing}
+                    options={[...EASING_NAMES]}
+                    onChange={(v) =>
+                      upsertMotorTrack({
+                        ...t,
+                        keys: t.keys.map((x) =>
+                          x.frame === k.frame
+                            ? { ...x, easing: v as EasingName }
+                            : x,
+                        ),
+                      })
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="forge-btn small danger"
+                    onClick={() =>
+                      upsertMotorTrack({
+                        ...t,
+                        keys: t.keys.filter((x) => x.frame !== k.frame),
+                      })
+                    }
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <p className="forge-hint">
+                Keys drive {j?.motorMode === 'velocity' ? 'speed' : 'target position'} per
+                frame — deterministic, rewind-safe, and baked into export.
+              </p>
+            </div>
+          );
+        })}
+      </Section>
     </div>
   );
 }

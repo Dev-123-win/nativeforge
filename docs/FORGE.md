@@ -67,6 +67,7 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 | `generators.ts` | Grid/circle/spiral/tower/pile/domino bakers, seeded | Pure + deterministic; baked batches share instancing keys |
 | `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
 | `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
+| `render/director.ts` | Pure keyframe eval: camera poses + motor targets per frame | No I/O; scrub/replay/export evaluate identically |
 | `emitters.ts` | Rate/burst/window/lifetime/maxAlive + oldest-recycle pooling | Deterministic spawn schedules |
 | `events.ts` | 8 triggers × 13 actions, one-shot per run | Engine-agnostic, unit-tested |
 | `cache.ts` | Keyframed snapshots + physics-hash invalidation | **Stale cache can never render**: hash mismatch drops everything |
@@ -96,6 +97,9 @@ v1 approximation, see §8.
 - Debug overlays: colliders, velocity, contacts, centers of mass, sleeping
   bodies, **joints** (gold anchor-to-anchor links), grid/axes, safe-area,
   live stats (fps/bodies/joints/contacts/ms/draws).
+- Director camera moves: an enabled track bound to the active camera
+  drives position/target/fov per frame; applied only on frame change so
+  orbiting while paused never fights the user.
 - Effects: pop shrink animation, latex fragments (real bodies), GPU particle
   pool, shockwave rings, vent puffs, elastic squash for jelly-like materials.
 - `captureAt(w,h)` renders exact export resolution for frame PNGs/thumbs.
@@ -128,6 +132,8 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   --out-dir out/ [--base-name clip]` renders one MP4 per seed
   (`<base>-seed<seed>.mp4`), sequentially so Electron instances never
   fight over the GPU encoder.
+- Camera moves and motor choreography render in export exactly as in
+  the viewport (same pure per-frame evaluation).
 
 ## 7. UI map (`ui/`)
 
@@ -136,7 +142,9 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
 - `AssetBrowser.tsx` — preset browser + 6 procedural generators (incl.
   rope/chain builder).
 - `Inspector.tsx` — Basic/Advanced/Expert inspector; Object/World/Events/
-  Joints/Render tabs. **Every visible control is wired** — no decorative sliders.
+  Joints/Director/Render tabs. **Every visible control is wired** — no decorative sliders.
+  The Director tab captures viewport poses as camera keys and edits motor
+  keys (Advanced reveals numeric channel values).
 - `Timeline.tsx` — transport, deterministic scrub, record band, event
   markers, cache size.
 - `SceneLibrary.tsx` — cards with thumbnail/meta; open/duplicate/rename/
@@ -161,6 +169,9 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   export resolution unless joint debug is on.
 - Rope links are rigid bodies, not a continuum — very long ropes stretch
   slightly under load; increase solver iterations for crane-cable looks.
+- Director v1: one effective camera track per camera (first enabled wins);
+  motor tracks drive hinge/slider joints only and require the joint's own
+  motor to be enabled; keyframe lanes on the Timeline are future work.
 
 ## 9. Extending
 

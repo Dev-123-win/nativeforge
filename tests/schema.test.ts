@@ -9,6 +9,8 @@ describe('migrateScene', () => {
       name: 'old',
     });
     expect(s.constraints).toEqual([]);
+    expect(s.cameraTracks).toEqual([]);
+    expect(s.motorTracks).toEqual([]);
     expect(s.objects).toEqual([]);
     expect(s.events).toEqual([]);
   });
@@ -21,6 +23,21 @@ describe('migrateScene', () => {
     ];
     const m = migrateScene(raw);
     expect(m.generators[0].generatedJoints).toEqual([]);
+  });
+
+  it('fills missing track channels and flags', () => {
+    const m = migrateScene({
+      sceneId: 'x',
+      schemaVersion: FORGE_SCHEMA_VERSION,
+      cameraTracks: [{ id: 'ct' }],
+      motorTracks: [{ id: 'mt', keys: [{ frame: 0, value: 1 }] }],
+    });
+    expect(m.cameraTracks[0].enabled).toBe(true);
+    expect(m.cameraTracks[0].position).toEqual([]);
+    expect(m.cameraTracks[0].target).toEqual([]);
+    expect(m.cameraTracks[0].fov).toEqual([]);
+    expect(m.motorTracks[0].enabled).toBe(true);
+    expect(m.motorTracks[0].keys).toHaveLength(1);
   });
 
   it('rejects missing or newer schemas', () => {

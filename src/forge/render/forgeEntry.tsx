@@ -16,6 +16,7 @@ import { PhysicsRuntime } from '../physics/runtime';
 import { ThreeRuntime } from '../three/runtime';
 import { templateProvider } from '../presets';
 import { migrateScene, type ForgeScene } from '../core/types';
+import { activeCameraTrack, evalCameraTrack } from './director';
 
 declare global {
   interface Window {
@@ -103,8 +104,16 @@ function renderFrame(sceneFrame: number): void {
   view.syncSpawned(phys.spawnedDescriptors(), phys.drainRemovedSpawned(), map);
   const cam = scene.cameras.find((c) => c.id === scene!.activeCameraId);
   const follow = cam?.followObjectId ? (map.get(cam.followObjectId) ?? null) : null;
+  // Director camera moves render in export exactly as in the viewport.
+  const track = activeCameraTrack(scene);
+  const pose = track && cam ? evalCameraTrack(track, cam, sceneFrame) : null;
   // Fixed dt keeps particle visuals deterministic-ish per frame index.
-  view.render(1 / Math.max(1, scene.render.fps), follow ? follow.p : null, 0);
+  view.render(
+    1 / Math.max(1, scene.render.fps),
+    follow ? follow.p : null,
+    0,
+    pose ? { frame: sceneFrame, pose } : null,
+  );
 }
 
 window.__setFrame = (f: number) => {

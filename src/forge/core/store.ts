@@ -9,12 +9,14 @@
 import { create } from 'zustand';
 import type {
   CameraData,
+  CameraTrack,
   ForgeConstraint,
   ForgeEvent,
   ForgeObject,
   ForgeScene,
   GeneratorRecord,
   LightData,
+  MotorTrack,
   RenderSettings,
   SceneSummary,
   UiLevel,
@@ -91,6 +93,10 @@ interface ForgeState {
   upsertConstraint: (c: ForgeConstraint) => void;
   addConstraints: (cs: ForgeConstraint[]) => void;
   removeConstraint: (id: string) => void;
+  upsertCameraTrack: (t: CameraTrack) => void;
+  removeCameraTrack: (id: string) => void;
+  upsertMotorTrack: (t: MotorTrack) => void;
+  removeMotorTrack: (id: string) => void;
   addGenerator: (g: GeneratorRecord) => void;
   removeGenerator: (id: string) => void;
   setSeed: (seed: number) => void;
@@ -250,6 +256,13 @@ export const useForge = create<ForgeState>((set, get) => ({
       g.generatedJoints = (g.generatedJoints ?? [])
         .map((id) => jointMap.get(id))
         .filter((x): x is string => !!x);
+    }
+    for (const t of scene.motorTracks) {
+      t.id = uid('motortrack');
+      t.jointId = jointMap.get(t.jointId) ?? t.jointId;
+    }
+    for (const t of scene.cameraTracks) {
+      t.id = uid('camtrack');
     }
     for (const e of scene.events) {
       e.id = uid('evt');
@@ -588,6 +601,77 @@ export const useForge = create<ForgeState>((set, get) => ({
       activeScene: touchScene({
         ...activeScene,
         constraints: activeScene.constraints.filter((x) => x.id !== id),
+        motorTracks: activeScene.motorTracks.filter((t) => t.jointId !== id),
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  upsertCameraTrack: (t) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    const sorted: CameraTrack = {
+      ...t,
+      position: [...t.position].sort((a, b) => a.frame - b.frame),
+      target: [...t.target].sort((a, b) => a.frame - b.frame),
+      fov: [...t.fov].sort((a, b) => a.frame - b.frame),
+    };
+    const exists = activeScene.cameraTracks.some((x) => x.id === t.id);
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        cameraTracks: exists
+          ? activeScene.cameraTracks.map((x) => (x.id === t.id ? sorted : x))
+          : [...activeScene.cameraTracks, sorted],
+      }),
+      dirty: true,
+    });
+    scheduleAutosave();
+  },
+
+  removeCameraTrack: (id) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        cameraTracks: activeScene.cameraTracks.filter((x) => x.id !== id),
+      }),
+      dirty: true,
+    });
+    scheduleAutosave();
+  },
+
+  upsertMotorTrack: (t) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    const sorted: MotorTrack = {
+      ...t,
+      keys: [...t.keys].sort((a, b) => a.frame - b.frame),
+    };
+    const exists = activeScene.motorTracks.some((x) => x.id === t.id);
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        motorTracks: exists
+          ? activeScene.motorTracks.map((x) => (x.id === t.id ? sorted : x))
+          : [...activeScene.motorTracks, sorted],
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  removeMotorTrack: (id) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        motorTracks: activeScene.motorTracks.filter((x) => x.id !== id),
       }),
       dirty: true,
       simRevision: get().simRevision + 1,

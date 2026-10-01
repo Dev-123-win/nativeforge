@@ -38,6 +38,7 @@ import {
   type EventActions,
 } from './events';
 import { Rng } from '../core/rng';
+import { evalMotorTrack } from '../render/director';
 import { SimCache, scenePhysicsHash } from './cache';
 
 let initPromise: Promise<void> | null = null;
@@ -905,6 +906,35 @@ export class PhysicsRuntime {
     } catch { /* stale body — rebuilt next sync */ }
   }
 
+  /**
+   * Per-frame motor choreography. Keyframed targets apply to live joints
+   * only while the joint's own motor is enabled; pure function of frame,
+   * so rewind/replay and cached restores stay deterministic.
+   */
+  private applyMotorTracks(): void {
+    const scene = this.scene;
+    if (!scene || !this.world || scene.motorTracks.length === 0) return;
+    for (const t of scene.motorTracks) {
+      if (!t.enabled || t.keys.length === 0) continue;
+      const live = this.joints.get(t.jointId);
+      if (!live || !live.def.motorEnabled) continue;
+      const v = evalMotorTrack(t, this.frame);
+      if (v == null || !Number.isFinite(v)) continue;
+      const uj = live.joint as unknown as {
+        configureMotorVelocity?: (v: number, f: number) => void;
+        configureMotorPosition?: (p: number, s: number, d: number) => void;
+      };
+      try {
+        if (live.def.motorMode === 'velocity') {
+          uj.configureMotorVelocity?.(v, live.def.motorForce);
+        } else {
+          uj.configureMotorPosition?.(
+            v, Math.max(1, live.def.motorForce), live.def.damping);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
   /** Break a joint with effect hooks. */
   private breakJoint(id: string): void {
     const j = this.joints.get(id);
@@ -941,6 +971,7 @@ export class PhysicsRuntime {
     this.world.timestep = Math.min(dt, w.maxTimestep);
     this.frameCollisions = [];
     this.contactsDebug = [];
+    this.applyMotorTracks();
 
     for (let s = 0; s < stepsPerFrame; s++) {
       for (let k = 0; k < sub; k++) {

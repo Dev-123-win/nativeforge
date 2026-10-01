@@ -433,6 +433,60 @@ export interface RenderSettings {
 
 /* ─── Scene / assets ─────────────────────────────────────────────────────── */
 
+export type EasingName =
+  | 'hold'
+  | 'linear'
+  | 'smooth'
+  | 'ease-in'
+  | 'ease-out'
+  | 'ease-in-out';
+
+export const EASING_NAMES: EasingName[] = [
+  'hold', 'linear', 'smooth', 'ease-in', 'ease-out', 'ease-in-out',
+];
+
+/** Scalar keyframe. `easing` shapes the segment STARTING at this key. */
+export interface NumKey {
+  frame: number;
+  value: number;
+  easing: EasingName;
+}
+
+/** Vec3 keyframe. `easing` shapes the segment STARTING at this key. */
+export interface Vec3Key {
+  frame: number;
+  value: Vec3;
+  easing: EasingName;
+}
+
+/**
+ * Camera move: keyframed position / look-target / fov for one camera.
+ * Render-side only (never touches the physics hash) but still a pure
+ * function of frame, so scrub and export stay deterministic.
+ */
+export interface CameraTrack {
+  id: string;
+  name: string;
+  cameraId: string;
+  enabled: boolean;
+  position: Vec3Key[];
+  target: Vec3Key[];
+  fov: NumKey[];
+}
+
+/**
+ * Motor choreography: per-frame target (position mode) or speed
+ * (velocity mode) for one hinge/slider joint. Applies only while the
+ * joint's own motor is enabled. Included in the physics hash.
+ */
+export interface MotorTrack {
+  id: string;
+  name: string;
+  jointId: string;
+  enabled: boolean;
+  keys: NumKey[];
+}
+
 export interface ForgeScene {
   sceneId: string;
   schemaVersion: number;
@@ -447,6 +501,8 @@ export interface ForgeScene {
   events: ForgeEvent[];
   generators: GeneratorRecord[];
   constraints: ForgeConstraint[];
+  cameraTracks: CameraTrack[];
+  motorTracks: MotorTrack[];
   assets: AssetRef[];
   render: RenderSettings;
   activeCameraId: string;
@@ -692,6 +748,28 @@ export function makeConstraint(
   };
 }
 
+export function makeCameraTrack(name: string, cameraId: string): CameraTrack {
+  return {
+    id: uid('camtrack'),
+    name,
+    cameraId,
+    enabled: true,
+    position: [],
+    target: [],
+    fov: [],
+  };
+}
+
+export function makeMotorTrack(name: string, jointId: string): MotorTrack {
+  return {
+    id: uid('motortrack'),
+    name,
+    jointId,
+    enabled: true,
+    keys: [],
+  };
+}
+
 export function makeScene(name: string): ForgeScene {
   const now = Date.now();
   const cam: CameraData = {
@@ -743,6 +821,8 @@ export function makeScene(name: string): ForgeScene {
     events: [],
     generators: [],
     constraints: [],
+    cameraTracks: [],
+    motorTracks: [],
     assets: [],
     render: defaultRender(),
     activeCameraId: cam.id,
@@ -770,12 +850,22 @@ export function migrateScene(raw: unknown): ForgeScene {
   const withDefaults = scene as unknown as Record<string, unknown>;
   for (const key of [
     'objects', 'cameras', 'lights', 'events', 'generators',
-    'constraints', 'assets',
+    'constraints', 'cameraTracks', 'motorTracks', 'assets',
   ]) {
     if (!Array.isArray(withDefaults[key])) withDefaults[key] = [];
   }
   for (const g of scene.generators as unknown as Array<Record<string, unknown>>) {
     if (!Array.isArray(g['generatedJoints'])) g['generatedJoints'] = [];
+  }
+  for (const t of scene.cameraTracks as unknown as Array<Record<string, unknown>>) {
+    if (typeof t['enabled'] !== 'boolean') t['enabled'] = true;
+    for (const k of ['position', 'target', 'fov']) {
+      if (!Array.isArray(t[k])) t[k] = [];
+    }
+  }
+  for (const t of scene.motorTracks as unknown as Array<Record<string, unknown>>) {
+    if (typeof t['enabled'] !== 'boolean') t['enabled'] = true;
+    if (!Array.isArray(t['keys'])) t['keys'] = [];
   }
   // v1 is current; future migrations chain here.
   return scene;

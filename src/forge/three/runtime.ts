@@ -17,6 +17,7 @@ import type {
 } from '../core/types';
 import type { BodyTransform, SpawnedDescriptor } from '../physics/runtime';
 import type { DebugFlags } from '../core/store';
+import type { CameraPose } from '../render/director';
 
 export interface ViewportCallbacks {
   onSelect: (ids: string[]) => void;
@@ -154,6 +155,7 @@ export class ThreeRuntime {
   private shockwaves: Array<{ mesh: THREE.Mesh; t0: number }> = [];
   private popAnims = new Map<string, number>();
   private camSig = '';
+  private directorFrame = -1;
   private sceneData: ForgeScene | null = null;
   private transformsById = new Map<string, BodyTransform>();
   private gizmoMode: 'translate' | 'rotate' | 'scale' = 'translate';
@@ -972,8 +974,40 @@ export class ThreeRuntime {
     return this.useOrtho ? this.ortho : this.camera;
   }
 
-  render(dt: number, followPos: Vec3 | null, shake: number): void {
+  /** Live viewport pose, for camera-keyframe capture. */
+  getCameraPose(): CameraPose {
+    const active = this.activeCamera();
+    return {
+      position: [active.position.x, active.position.y, active.position.z],
+      target: [
+        this.controls.target.x,
+        this.controls.target.y,
+        this.controls.target.z,
+      ],
+      fov: active instanceof THREE.PerspectiveCamera ? active.fov : 50,
+    };
+  }
+
+  render(
+    dt: number,
+    followPos: Vec3 | null,
+    shake: number,
+    director: { frame: number; pose: CameraPose } | null = null,
+  ): void {
     if (this.disposed) return;
+    // Director track owns the camera on frames it defines: applied only
+    // when the frame number changes, so free-orbiting while paused (same
+    // frame, no re-apply) never fights the user.
+    if (director && director.frame !== this.directorFrame) {
+      this.directorFrame = director.frame;
+      const active = this.activeCamera();
+      active.position.set(...director.pose.position);
+      this.controls.target.set(...director.pose.target);
+      if (active instanceof THREE.PerspectiveCamera) {
+        active.fov = director.pose.fov;
+        active.updateProjectionMatrix();
+      }
+    }
     if (followPos && !this.lookThroughCamera) {
       this.controls.target.lerp(tmpP.set(followPos[0], followPos[1], followPos[2]), 0.12);
     }

@@ -10,8 +10,9 @@ import { useForge } from '../core/store';
 import { PhysicsRuntime, type PhysicsStats, type RuntimeEventMsg } from '../physics/runtime';
 import { ThreeRuntime, type ViewportStats } from '../three/runtime';
 import { templateProvider } from '../presets';
+import { activeCameraTrack, evalCameraTrack } from '../render/director';
 import { AssetBrowser } from './AssetBrowser';
-import { Inspector, type RenderActions } from './Inspector';
+import { Inspector, type DirectorActions, type RenderActions } from './Inspector';
 import { Timeline } from './Timeline';
 import { SceneLibrary } from './SceneLibrary';
 import { playSynth } from './sound';
@@ -180,7 +181,14 @@ function Editor({ onExit }: { onExit: () => void }) {
       t3.updateDebug(st.debug, p.contacts(), map);
       const cam = sc.cameras.find((c) => c.id === sc.activeCameraId);
       const follow = cam?.followObjectId ? (map.get(cam.followObjectId) ?? null) : null;
-      t3.render(dt, follow ? follow.p : null, cam?.shake ?? 0);
+      const track = activeCameraTrack(sc);
+      const pose = track && cam ? evalCameraTrack(track, cam, want) : null;
+      t3.render(
+        dt,
+        follow ? follow.p : null,
+        cam?.shake ?? 0,
+        pose ? { frame: want, pose } : null,
+      );
 
       if (now - statAt > 500) {
         statAt = now;
@@ -311,6 +319,21 @@ function Editor({ onExit }: { onExit: () => void }) {
     await st.saveNow();
   };
 
+  const directorActions: DirectorActions = React.useMemo(
+    () => ({
+      goToFrame: (f) => {
+        const st = useForge.getState();
+        const max = (st.activeScene?.render.durationFrames ?? 1) - 1;
+        st.setPlayback({
+          playing: false,
+          frame: Math.max(0, Math.min(max, Math.round(f))),
+        });
+      },
+      captureCamera: () => threeRef.current?.getCameraPose() ?? null,
+    }),
+    [],
+  );
+
   const renderActions: RenderActions = React.useMemo(() => ({
     downloadJson: async () => {
       const st = useForge.getState();
@@ -425,7 +448,11 @@ function Editor({ onExit }: { onExit: () => void }) {
           <Timeline cacheSize={cacheSize} />
         </div>
 
-        <Inspector renderActions={renderActions} brokenJoints={brokenJoints} />
+        <Inspector
+          renderActions={renderActions}
+          brokenJoints={brokenJoints}
+          director={directorActions}
+        />
       </div>
     </div>
   );

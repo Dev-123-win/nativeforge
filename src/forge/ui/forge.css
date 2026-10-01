@@ -532,6 +532,19 @@
 .forge-event-head .forge-text { flex: 1; }
 .forge-event-head b { flex: 1; font-size: 12px; }
 
+.forge-key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: #0b0e14;
+  border: 1px solid #232d45;
+  border-radius: 6px;
+  padding: 6px;
+}
+.forge-key-row .forge-field { flex: 1; min-width: 90px; margin: 0; }
+.forge-key-values { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; }
+
 .forge-preset-grid { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 
 .forge-cmd {

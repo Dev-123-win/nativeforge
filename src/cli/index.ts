@@ -82,4 +82,28 @@ program
     });
   });
 
+// ── render-forge-batch ────────────────────────────────────────────────
+program
+  .command('render-forge-batch <sceneFile>')
+  .description('Render a Forge scene across multiple seeds (one MP4 per seed)')
+  .requiredOption('--seeds <spec>', 'Seed list, e.g. "1,2,3", "1-5", "1..5"')
+  .option('--out-dir <dir>', 'Output directory (default: out/)')
+  .option('--base-name <name>', 'Output filename stem (default: scene name)')
+  .option('--port <number>', 'Dev server port', '3101')
+  .option('--audio <path>', 'Audio file to mux (AAC)')
+  .option('--gpu-mode <mode>', 'Encoder selection: auto, cpu, gpu', 'auto')
+  .action(async (sceneFile: string, opts) => {
+    const { renderForgeBatch } = await import('./render-forge-batch.js');
+    const files = await renderForgeBatch(sceneFile, {
+      seeds: opts.seeds,
+      outDir: opts.outDir,
+      baseName: opts.baseName,
+      port: parseInt(opts.port, 10),
+      audio: opts.audio,
+      gpuMode: opts.gpuMode,
+    });
+    console.log(`\n✅ ${files.length} render(s) complete:`);
+    for (const f of files) console.log(`   ${f}`);
+  });
+
 program.parse(process.argv);

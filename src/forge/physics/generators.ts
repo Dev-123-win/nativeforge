@@ -101,6 +101,7 @@ function makeRecord(
     params,
     templateId,
     generatedIds: ids,
+    generatedJoints: [],
   };
 }
 

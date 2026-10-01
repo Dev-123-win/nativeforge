@@ -856,6 +856,38 @@ export class ThreeRuntime {
         })));
       }
     }
+    if (debug.showJoints && this.sceneData && this.sceneData.constraints.length > 0) {
+      const mat = new THREE.LineBasicMaterial({ color: 0xffc247 });
+      const pts: number[] = [];
+      const dots: number[] = [];
+      for (const c of this.sceneData.constraints) {
+        const ta = transforms.get(c.bodyA);
+        const tb = transforms.get(c.bodyB);
+        if (!ta || !tb) continue;
+        tmpQ.set(ta.q[0], ta.q[1], ta.q[2], ta.q[3]);
+        tmpP.set(c.anchorA[0], c.anchorA[1], c.anchorA[2]).applyQuaternion(tmpQ);
+        const ax = ta.p[0] + tmpP.x;
+        const ay = ta.p[1] + tmpP.y;
+        const az = ta.p[2] + tmpP.z;
+        tmpQ.set(tb.q[0], tb.q[1], tb.q[2], tb.q[3]);
+        tmpP.set(c.anchorB[0], c.anchorB[1], c.anchorB[2]).applyQuaternion(tmpQ);
+        const bx = tb.p[0] + tmpP.x;
+        const by = tb.p[1] + tmpP.y;
+        const bz = tb.p[2] + tmpP.z;
+        pts.push(ax, ay, az, bx, by, bz);
+        dots.push(ax, ay, az, bx, by, bz);
+      }
+      if (pts.length > 0) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+        this.debugGroup.add(new THREE.LineSegments(g, mat));
+        const gd = new THREE.BufferGeometry();
+        gd.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dots), 3));
+        this.debugGroup.add(new THREE.Points(gd, new THREE.PointsMaterial({
+          color: 0xffc247, size: 0.12,
+        })));
+      }
+    }
   }
 
   /* ── Particles / shockwaves ── */

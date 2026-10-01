@@ -9,6 +9,7 @@
 import { create } from 'zustand';
 import type {
   CameraData,
+  ForgeConstraint,
   ForgeEvent,
   ForgeObject,
   ForgeScene,
@@ -34,6 +35,7 @@ export interface DebugFlags {
   showVelocity: boolean;
   showContacts: boolean;
   showCOM: boolean;
+  showJoints: boolean;
   showSleeping: boolean;
   showGrid: boolean;
   showAxes: boolean;
@@ -86,6 +88,9 @@ interface ForgeState {
   setActiveCamera: (id: string) => void;
   upsertEvent: (ev: ForgeEvent) => void;
   removeEvent: (id: string) => void;
+  upsertConstraint: (c: ForgeConstraint) => void;
+  addConstraints: (cs: ForgeConstraint[]) => void;
+  removeConstraint: (id: string) => void;
   addGenerator: (g: GeneratorRecord) => void;
   removeGenerator: (id: string) => void;
   setSeed: (seed: number) => void;
@@ -102,6 +107,7 @@ const DEFAULT_DEBUG: DebugFlags = {
   showVelocity: false,
   showContacts: false,
   showCOM: false,
+  showJoints: true,
   showSleeping: false,
   showGrid: true,
   showAxes: true,
@@ -231,6 +237,20 @@ export const useForge = create<ForgeState>((set, get) => ({
     }
     const remapTarget = (id: string | null) =>
       id ? (idMap.get(id) ?? id) : id;
+    const jointMap = new Map<string, string>();
+    for (const c of scene.constraints) {
+      const newId = uid('joint');
+      jointMap.set(c.id, newId);
+      c.id = newId;
+      c.bodyA = idMap.get(c.bodyA) ?? c.bodyA;
+      c.bodyB = idMap.get(c.bodyB) ?? c.bodyB;
+      c.rev = 1;
+    }
+    for (const g of scene.generators) {
+      g.generatedJoints = (g.generatedJoints ?? [])
+        .map((id) => jointMap.get(id))
+        .filter((x): x is string => !!x);
+    }
     for (const e of scene.events) {
       e.id = uid('evt');
       e.trigger.objectA = remapTarget(e.trigger.objectA);
@@ -356,6 +376,9 @@ export const useForge = create<ForgeState>((set, get) => ({
       activeScene: touchScene({
         ...activeScene,
         objects: activeScene.objects.filter((o) => !doomed.has(o.id)),
+        constraints: activeScene.constraints.filter(
+          (c) => !doomed.has(c.bodyA) && !doomed.has(c.bodyB),
+        ),
         generators: activeScene.generators.map((g) => ({
           ...g,
           generatedIds: g.generatedIds.filter((id) => !doomed.has(id)),
@@ -525,6 +548,53 @@ export const useForge = create<ForgeState>((set, get) => ({
     scheduleAutosave();
   },
 
+  upsertConstraint: (c) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    const exists = activeScene.constraints.some((x) => x.id === c.id);
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        constraints: exists
+          ? activeScene.constraints.map((x) =>
+              x.id === c.id ? { ...c, rev: x.rev + 1 } : x,
+            )
+          : [...activeScene.constraints, c],
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  addConstraints: (cs) => {
+    const { activeScene } = get();
+    if (!activeScene || cs.length === 0) return;
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        constraints: [...activeScene.constraints, ...cs],
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  removeConstraint: (id) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        constraints: activeScene.constraints.filter((x) => x.id !== id),
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
   addGenerator: (g) => {
     const { activeScene } = get();
     if (!activeScene) return;
@@ -544,11 +614,13 @@ export const useForge = create<ForgeState>((set, get) => ({
     if (!activeScene) return;
     const gen = activeScene.generators.find((g) => g.id === id);
     const doomed = new Set(gen?.generatedIds ?? []);
+    const doomedJoints = new Set(gen?.generatedJoints ?? []);
     set({
       activeScene: touchScene({
         ...activeScene,
         generators: activeScene.generators.filter((g) => g.id !== id),
         objects: activeScene.objects.filter((o) => !doomed.has(o.id)),
+        constraints: activeScene.constraints.filter((c) => !doomedJoints.has(c.id)),
       }),
       dirty: true,
       simRevision: get().simRevision + 1,

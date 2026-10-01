@@ -14,6 +14,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type {
   ColliderShape,
   CombineRule,
+  ForgeConstraint,
   ForgeObject,
   ForgeScene,
   GeometryData,
@@ -232,6 +233,8 @@ export interface PhysicsStats {
   bodies: number;
   colliders: number;
   contacts: number;
+  joints: number;
+  brokenJoints: number;
   stepMs: number;
 }
 
@@ -266,6 +269,7 @@ interface AuxState {
   spawnCounter: number;
   popped: string[];
   fractured: string[];
+  brokenJoints: string[];
   fired: string[];
   venting: string[];
   emitters: Array<{
@@ -283,7 +287,8 @@ interface AuxState {
 
 const AUX_EMPTY: AuxState = {
   simTime: 0, spawnCounter: 0, popped: [], fractured: [],
-  fired: [], venting: [], emitters: [], spawnedMeta: [], removedSpawned: [],
+  brokenJoints: [], fired: [], venting: [], emitters: [],
+  spawnedMeta: [], removedSpawned: [],
 };
 
 /* ─── Runtime ────────────────────────────────────────────────────────────── */
@@ -308,6 +313,12 @@ export class PhysicsRuntime {
   private removedSpawned: string[] = [];
   private poppedSet = new Set<string>();
   private fracturedSet = new Set<string>();
+  private joints = new Map<
+    string,
+    { joint: RAPIER.ImpulseJoint; handle: number; def: ForgeConstraint }
+  >();
+  private brokenJoints = new Set<string>();
+  private constraintsSig = '';
   private activeContacts = new Map<string, { a: string; b: string }>();
   private frameCollisions: CollisionRecord[] = [];
   private contactsDebug: Vec3[] = [];
@@ -357,6 +368,8 @@ export class PhysicsRuntime {
     this.removedSpawned = [];
     this.poppedSet.clear();
     this.fracturedSet.clear();
+    this.joints.clear();
+    this.brokenJoints.clear();
     this.frame = 0;
     this.simTime = 0;
     this.spawnCounter = 0;
@@ -371,6 +384,7 @@ export class PhysicsRuntime {
         this.emitters.set(obj.id, createEmitterState(obj.id, obj.emitter, scene.seed));
       }
     }
+    this.rebuildJoints();
     this.snapshotFrame(0);
   }
 
@@ -401,12 +415,14 @@ export class PhysicsRuntime {
     } catch { /* ignore */ }
 
     const seen = new Set<string>();
+    let bodiesTouched = false;
     for (const obj of scene.objects) {
       seen.add(obj.id);
       const built = this.bodies.get(obj.id);
       if (this.poppedSet.has(obj.id) || this.fracturedSet.has(obj.id)) continue;
       if (!built) {
         this.buildObject(obj);
+        bodiesTouched = true;
         continue;
       }
       const sig = this.structSig(obj);
@@ -427,6 +443,7 @@ export class PhysicsRuntime {
               1e-9);
         this.removeBuilt(built);
         this.buildObject(obj, preserve, !velEdited);
+        bodiesTouched = true;
         continue;
       }
       // Transform-only change → teleport (preserves velocities). Guarded by
@@ -465,6 +482,7 @@ export class PhysicsRuntime {
       if (!seen.has(id) && !this.spawnedMeta.has(id)) {
         const built = this.bodies.get(id)!;
         this.removeBuilt(built);
+        bodiesTouched = true;
       }
     }
     // Emitters add/remove.
@@ -479,6 +497,13 @@ export class PhysicsRuntime {
     // Events: merge enabled/config, keep runtime fired flags.
     const fired = new Set(this.events.filter((e) => e.fired).map((e) => e.id));
     this.events = scene.events.map((e) => ({ ...e, fired: fired.has(e.id) }));
+
+    // Joints: rebuild when constraints changed or any body was rebuilt
+    // (Rapier joints hold body handles, so body rebuilds orphan them).
+    const jointSig = this.constraintsSigOf(scene);
+    if (jointSig !== this.constraintsSig || bodiesTouched) {
+      this.rebuildJoints();
+    }
   }
 
   dispose(): void {
@@ -759,6 +784,14 @@ export class PhysicsRuntime {
 
   private removeBuilt(built: BuiltBody): void {
     if (!this.world) return;
+    for (const [jid, j] of [...this.joints]) {
+      if (j.def.bodyA === built.id || j.def.bodyB === built.id) {
+        try {
+          this.world.removeImpulseJoint(j.joint, true);
+        } catch { /* already gone */ }
+        this.joints.delete(jid);
+      }
+    }
     try {
       this.world.removeRigidBody(built.body);
     } catch { /* already gone */ }
@@ -769,6 +802,125 @@ export class PhysicsRuntime {
     for (const [k, v] of this.activeContacts) {
       if (v.a === built.id || v.b === built.id) this.activeContacts.delete(k);
     }
+  }
+
+  /* ── Joints ── */
+
+  private constraintsSigOf(scene: ForgeScene): string {
+    return JSON.stringify(scene.constraints);
+  }
+
+  private rebuildJoints(): void {
+    if (!this.world || !this.scene) return;
+    for (const [, j] of this.joints) {
+      try {
+        this.world.removeImpulseJoint(j.joint, true);
+      } catch { /* already gone */ }
+    }
+    this.joints.clear();
+    this.brokenJoints.clear();
+    for (const c of this.scene.constraints) this.buildJoint(c);
+    this.constraintsSig = this.constraintsSigOf(this.scene);
+  }
+
+  private buildJoint(def: ForgeConstraint): void {
+    if (!this.world || !def.enabled) return;
+    const A = this.bodies.get(def.bodyA);
+    const B = this.bodies.get(def.bodyB);
+    if (!A || !B) return;
+    const a1 = { x: def.anchorA[0], y: def.anchorA[1], z: def.anchorA[2] };
+    const a2 = { x: def.anchorB[0], y: def.anchorB[1], z: def.anchorB[2] };
+    const ax = { x: def.axis[0], y: def.axis[1], z: def.axis[2] };
+    let data: RAPIER.JointData | null = null;
+    try {
+      switch (def.type) {
+        case 'fixed':
+          data = RAPIER.JointData.fixed(
+            a1, { x: 0, y: 0, z: 0, w: 1 }, a2, { x: 0, y: 0, z: 0, w: 1 });
+          break;
+        case 'distance':
+          // Fixed distance via a stiff spring (Rapier has no rigid
+          // distance joint; stiffness floor keeps it near-rigid).
+          data = RAPIER.JointData.spring(
+            Math.max(0.01, def.restLength),
+            Math.max(def.stiffness, 50000),
+            def.damping, a1, a2);
+          break;
+        case 'hinge':
+          data = RAPIER.JointData.revolute(a1, a2, ax);
+          break;
+        case 'slider':
+          data = RAPIER.JointData.prismatic(a1, a2, ax);
+          break;
+        case 'spring':
+          data = RAPIER.JointData.spring(
+            Math.max(0.01, def.restLength), def.stiffness, def.damping, a1, a2);
+          break;
+        case 'ball':
+          data = RAPIER.JointData.spherical(a1, a2);
+          break;
+        case 'rope':
+          data = RAPIER.JointData.rope(Math.max(0.01, def.restLength), a1, a2);
+          break;
+        default:
+          return;
+      }
+    } catch {
+      return;
+    }
+    if (!data) return;
+    try {
+      const joint = this.world.createImpulseJoint(data, A.body, B.body, true);
+      this.joints.set(def.id, { joint, handle: joint.handle, def });
+      // Limits + motors (revolute/prismatic) — feature-detected.
+      const uj = joint as unknown as {
+        setLimits?: (min: number, max: number) => void;
+        configureMotorVelocity?: (v: number, f: number) => void;
+        configureMotorPosition?: (p: number, s: number, d: number) => void;
+        configureMotorModel?: (m: number) => void;
+      };
+      if (def.limitsEnabled && typeof uj.setLimits === 'function') {
+        try {
+          uj.setLimits(def.minLimit, def.maxLimit);
+        } catch { /* ignore */ }
+      }
+      if (def.motorEnabled) {
+        const MM = (
+          RAPIER as unknown as { MotorModel?: { ForceBased: number } }
+        ).MotorModel;
+        try {
+          if (MM && typeof uj.configureMotorModel === 'function') {
+            uj.configureMotorModel(MM.ForceBased);
+          }
+        } catch { /* ignore */ }
+        try {
+          if (def.motorMode === 'velocity') {
+            uj.configureMotorVelocity?.(def.motorSpeed, def.motorForce);
+          } else {
+            uj.configureMotorPosition?.(
+              def.motorTarget, Math.max(1, def.motorForce), def.damping);
+          }
+        } catch { /* ignore */ }
+      }
+    } catch { /* stale body — rebuilt next sync */ }
+  }
+
+  /** Break a joint with effect hooks. */
+  private breakJoint(id: string): void {
+    const j = this.joints.get(id);
+    if (!j || !this.world) return;
+    try {
+      this.world.removeImpulseJoint(j.joint, true);
+    } catch { /* ignore */ }
+    this.joints.delete(id);
+    this.brokenJoints.add(id);
+    const point = this.midpoint(j.def.bodyA, j.def.bodyB);
+    this.opts.onEvent({ type: 'sound', name: 'snap', point, intensity: 0.8 });
+    this.opts.onEvent({ type: 'particles', point, intensity: 0.5 });
+  }
+
+  brokenJointIds(): Set<string> {
+    return this.brokenJoints;
   }
 
   /* ── Stepping ── */
@@ -1234,6 +1386,31 @@ export class PhysicsRuntime {
       }
     }
 
+    // Breakable joints: stress proxy σ = μ·|Δv|/dt (N). v1 approximation,
+    // documented — Rapier exposes no joint reaction forces in JS.
+    if (this.joints.size > 0) {
+      for (const [id, j] of [...this.joints]) {
+        const threshold = j.def.breakForce;
+        if (!(threshold > 0)) continue;
+        const A = this.bodies.get(j.def.bodyA);
+        const B = this.bodies.get(j.def.bodyB);
+        if (!A || !B) continue;
+        try {
+          const va = A.body.linvel();
+          const vb = B.body.linvel();
+          const dv = Math.sqrt(
+            (va.x - vb.x) ** 2 + (va.y - vb.y) ** 2 + (va.z - vb.z) ** 2,
+          );
+          const ma = A.isDynamic ? A.body.mass() : Infinity;
+          const mb = B.isDynamic ? B.body.mass() : Infinity;
+          if (!isFinite(ma) && !isFinite(mb)) continue;
+          const mu = !isFinite(ma) ? mb : !isFinite(mb) ? ma : (ma * mb) / (ma + mb);
+          const stress = (mu * dv) / Math.max(1e-4, dtFrame);
+          if (stress > threshold) this.breakJoint(id);
+        } catch { /* ignore */ }
+      }
+    }
+
     // Pressure vessels.
     const venting = this.pressure.step(
       dtFrame,
@@ -1642,6 +1819,7 @@ export class PhysicsRuntime {
       spawnCounter: this.spawnCounter,
       popped: [...this.poppedSet],
       fractured: [...this.fracturedSet],
+      brokenJoints: [...this.brokenJoints],
       fired: this.events.filter((e) => e.fired).map((e) => e.id),
       venting: [],
       emitters: [...this.emitters.entries()].map(([id, st]) => ({
@@ -1664,6 +1842,36 @@ export class PhysicsRuntime {
     this.spawnCounter = aux.spawnCounter;
     this.poppedSet = new Set(aux.popped);
     this.fracturedSet = new Set(aux.fractured);
+    // Post-keyframe spawns no longer exist — prune stale refs and tell the
+    // viewport to drop their meshes.
+    const spawnedBefore = new Set(this.spawnedMeta.keys());
+    this.spawnedMeta = new Map(aux.spawnedMeta);
+    for (const id of spawnedBefore) {
+      if (!this.spawnedMeta.has(id)) this.removedSpawned.push(id);
+    }
+    const liveIds = new Set<string>([
+      ...this.scene.objects.map((o) => o.id),
+      ...this.spawnedMeta.keys(),
+    ]);
+    for (const id of [...this.bodies.keys()]) {
+      if (!liveIds.has(id)) {
+        const stale = this.bodies.get(id)!;
+        for (const h of stale.colliderHandles) this.colliderToBody.delete(h);
+        this.bodies.delete(id);
+      }
+    }
+    // Joints don't survive world disposal — rebuild, then re-apply breaks.
+    this.rebuildJoints();
+    for (const id of aux.brokenJoints) {
+      const j = this.joints.get(id);
+      if (j && this.world) {
+        try {
+          this.world.removeImpulseJoint(j.joint, true);
+        } catch { /* ignore */ }
+        this.joints.delete(id);
+      }
+    }
+    this.brokenJoints = new Set(aux.brokenJoints);
     const fired = new Set(aux.fired);
     // Rebuild event list from scene (config may have changed) + fired flags.
     this.events = this.scene.events.map((e) => ({ ...e, fired: fired.has(e.id) }));
@@ -1686,7 +1894,6 @@ export class PhysicsRuntime {
       st.ages = new Map(e.ages);
       this.emitters.set(e.id, st);
     }
-    this.spawnedMeta = new Map(aux.spawnedMeta);
     this.removedSpawned = [...aux.removedSpawned];
     this.activeContacts.clear();
     this.frameCollisions = [];
@@ -1802,6 +2009,8 @@ export class PhysicsRuntime {
     this.removedSpawned = [];
     this.poppedSet.clear();
     this.fracturedSet.clear();
+    this.joints.clear();
+    this.brokenJoints.clear();
     this.frame = 0;
     this.simTime = 0;
     this.spawnCounter = 0;
@@ -1814,6 +2023,7 @@ export class PhysicsRuntime {
       }
     }
     this.cache.validate(this.physicsHash);
+    this.rebuildJoints();
     this.snapshotFrame(0);
   }
 
@@ -1866,6 +2076,8 @@ export class PhysicsRuntime {
       bodies: this.bodies.size,
       colliders: this.colliderToBody.size,
       contacts: this.activeContacts.size,
+      joints: this.joints.size,
+      brokenJoints: this.brokenJoints.size,
       stepMs: this.stepMs,
     };
   }

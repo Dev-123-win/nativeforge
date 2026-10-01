@@ -19,6 +19,9 @@ export function scenePhysicsHash(scene: ForgeScene): string {
   for (const e of scene.events) {
     s += `${e.id}${e.enabled ? 1 : 0}${JSON.stringify(e.trigger)}${JSON.stringify(e.action)};`;
   }
+  for (const j of scene.constraints ?? []) {
+    s += `${j.id}${j.rev}${j.enabled ? 1 : 0}${j.type}${j.bodyA}${j.bodyB}${JSON.stringify(j.anchorA)}${JSON.stringify(j.anchorB)}${JSON.stringify(j.axis)}${j.restLength},${j.stiffness},${j.damping},${j.motorSpeed},${j.motorForce},${j.breakForce};`;
+  }
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);

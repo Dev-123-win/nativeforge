@@ -68,6 +68,7 @@ window.__FORGE_BOOT__ = async () => {
       showVelocity: false,
       showContacts: false,
       showCOM: false,
+      showJoints: false,
       showSleeping: false,
       showGrid: false,
       showAxes: false,

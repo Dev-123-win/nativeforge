@@ -74,6 +74,14 @@ export type MachineKind =
   | 'wheel';
 export type FractureMode = 'grid' | 'radial' | 'random' | 'voronoi-lite';
 export type UiLevel = 'basic' | 'advanced' | 'expert';
+export type ConstraintType =
+  | 'fixed'
+  | 'distance'
+  | 'hinge'
+  | 'slider'
+  | 'spring'
+  | 'ball'
+  | 'rope';
 
 /* ─── Transform / rigid body / collider ──────────────────────────────────── */
 
@@ -364,12 +372,43 @@ export interface ForgeEvent {
 
 export interface GeneratorRecord {
   id: string;
-  type: 'grid' | 'circle' | 'spiral' | 'tower' | 'pile';
+  type: 'grid' | 'circle' | 'spiral' | 'tower' | 'pile' | 'rope' | 'chain';
   name: string;
   seed: number;
   params: Record<string, number | string>;
   templateId: string;
   generatedIds: string[];
+  /** Joints created alongside the objects (ropes/chains). */
+  generatedJoints: string[];
+}
+
+export interface ForgeConstraint {
+  id: string;
+  name: string;
+  rev: number;
+  enabled: boolean;
+  type: ConstraintType;
+  /** Object ids of the two linked bodies. */
+  bodyA: string;
+  bodyB: string;
+  /** Anchor points in each body's LOCAL space. */
+  anchorA: Vec3;
+  anchorB: Vec3;
+  /** Hinge/slider axis in bodyA local space. */
+  axis: Vec3;
+  restLength: number;
+  stiffness: number;
+  damping: number;
+  limitsEnabled: boolean;
+  minLimit: number;
+  maxLimit: number;
+  motorEnabled: boolean;
+  motorMode: 'velocity' | 'position';
+  motorSpeed: number;
+  motorForce: number;
+  motorTarget: number;
+  /** 0 = unbreakable; otherwise stress threshold in N (v1 proxy). */
+  breakForce: number;
 }
 
 export interface AssetRef {
@@ -407,6 +446,7 @@ export interface ForgeScene {
   lights: LightData[];
   events: ForgeEvent[];
   generators: GeneratorRecord[];
+  constraints: ForgeConstraint[];
   assets: AssetRef[];
   render: RenderSettings;
   activeCameraId: string;
@@ -620,6 +660,38 @@ export function makeObject(
   };
 }
 
+export function makeConstraint(
+  name: string,
+  type: ConstraintType,
+  bodyA: string,
+  bodyB: string,
+): ForgeConstraint {
+  return {
+    id: uid('joint'),
+    name,
+    rev: 1,
+    enabled: true,
+    type,
+    bodyA,
+    bodyB,
+    anchorA: [0, 0, 0],
+    anchorB: [0, 0, 0],
+    axis: [0, 0, 1],
+    restLength: 1,
+    stiffness: 1000,
+    damping: 10,
+    limitsEnabled: false,
+    minLimit: -1,
+    maxLimit: 1,
+    motorEnabled: false,
+    motorMode: 'velocity',
+    motorSpeed: 2,
+    motorForce: 100,
+    motorTarget: 0,
+    breakForce: 0,
+  };
+}
+
 export function makeScene(name: string): ForgeScene {
   const now = Date.now();
   const cam: CameraData = {
@@ -670,6 +742,7 @@ export function makeScene(name: string): ForgeScene {
     ],
     events: [],
     generators: [],
+    constraints: [],
     assets: [],
     render: defaultRender(),
     activeCameraId: cam.id,
@@ -692,6 +765,17 @@ export function migrateScene(raw: unknown): ForgeScene {
     throw new Error(
       `Scene schema v${scene.schemaVersion} is newer than this build (v${FORGE_SCHEMA_VERSION}).`,
     );
+  }
+  // Fill optional arrays so older saves / hand-written files load safely.
+  const withDefaults = scene as unknown as Record<string, unknown>;
+  for (const key of [
+    'objects', 'cameras', 'lights', 'events', 'generators',
+    'constraints', 'assets',
+  ]) {
+    if (!Array.isArray(withDefaults[key])) withDefaults[key] = [];
+  }
+  for (const g of scene.generators as unknown as Array<Record<string, unknown>>) {
+    if (!Array.isArray(g['generatedJoints'])) g['generatedJoints'] = [];
   }
   // v1 is current; future migrations chain here.
   return scene;

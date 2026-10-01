@@ -43,6 +43,7 @@ function Editor({ onExit }: { onExit: () => void }) {
   const [vStats, setVStats] = React.useState<ViewportStats | null>(null);
   const [pStats, setPStats] = React.useState<PhysicsStats | null>(null);
   const [cacheSize, setCacheSize] = React.useState(0);
+  const [brokenJoints, setBrokenJoints] = React.useState<string[]>([]);
   const [gizmoMode, setGizmoModeState] = React.useState<GizmoMode>('translate');
   const [snapOn, setSnapOn] = React.useState(true);
   const [lookThrough, setLookThrough] = React.useState(false);
@@ -185,6 +186,7 @@ function Editor({ onExit }: { onExit: () => void }) {
         statAt = now;
         setPStats(p.stats());
         setCacheSize(p.cacheSize);
+        setBrokenJoints([...p.brokenJointIds()]);
       }
     };
     raf = requestAnimationFrame(tick);
@@ -399,6 +401,8 @@ function Editor({ onExit }: { onExit: () => void }) {
               <div className="forge-stats">
                 <span>{vStats?.fps ?? '—'} fps</span>
                 <span>{pStats?.bodies ?? 0} bodies</span>
+                <span>{pStats?.joints ?? 0} joints</span>
+                {brokenJoints.length > 0 && <span>{brokenJoints.length} broken</span>}
                 <span>{pStats?.contacts ?? 0} contacts</span>
                 <span>{(pStats?.stepMs ?? 0).toFixed(1)}ms phys</span>
                 <span>{vStats?.drawCalls ?? 0} draws</span>
@@ -421,7 +425,7 @@ function Editor({ onExit }: { onExit: () => void }) {
           <Timeline cacheSize={cacheSize} />
         </div>
 
-        <Inspector renderActions={renderActions} />
+        <Inspector renderActions={renderActions} brokenJoints={brokenJoints} />
       </div>
     </div>
   );
@@ -561,6 +565,7 @@ function ViewportToolbar(props: {
         {chip('showColliders', 'bodies', 'Show collision shapes')}
         {chip('showVelocity', 'vel', 'Show velocities')}
         {chip('showContacts', 'contacts', 'Show contact points')}
+        {chip('showJoints', 'joints', 'Show joints')}
         {chip('showCOM', 'com', 'Show centers of mass')}
         {chip('showSleeping', 'sleep', 'Show sleeping bodies')}
         {chip('showGrid', 'grid', 'Show grid')}

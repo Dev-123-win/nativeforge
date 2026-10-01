@@ -13,8 +13,9 @@ import {
   bakeTower,
 } from '../physics/generators';
 import { Rng } from '../core/rng';
+import { bakeChain, bakeRope } from '../physics/rope';
 
-const GEN_TABS = ['grid', 'circle', 'spiral', 'tower', 'pile'] as const;
+const GEN_TABS = ['grid', 'circle', 'spiral', 'tower', 'pile', 'rope'] as const;
 type GenTab = (typeof GEN_TABS)[number];
 
 export function AssetBrowser() {
@@ -123,6 +124,8 @@ export function AssetBrowser() {
             Scene seed <code>{seed}</code> drives all procedural randomness.
           </p>
         </div>
+      ) : tab === 'rope' ? (
+        <RopeForm />
       ) : (
         <div className="forge-gen-form">
           <h4>
@@ -230,4 +233,115 @@ function iconFor(id: string): string {
   if (id.startsWith('ramp')) return '🛝';
   if (id.startsWith('domino')) return '🎲';
   return '📄';
+}
+
+
+/* ─── Rope / chain builder ───────────────────────────────────────────────── */
+
+function NumField({ label, value, onChange, min, max, step }: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+}) {
+  return (
+    <label className="forge-field">
+      <span className="forge-label">{label}</span>
+      <input
+        type="number"
+        className="forge-num wide"
+        value={value}
+        min={min}
+        max={max}
+        step={step ?? 1}
+        onChange={(e) =>
+          onChange(Math.max(min, Math.min(max, Number(e.target.value) || min)))
+        }
+      />
+    </label>
+  );
+}
+
+function RopeForm() {
+  const addObjects = useForge((s) => s.addObjects);
+  const addConstraints = useForge((s) => s.addConstraints);
+  const addGenerator = useForge((s) => s.addGenerator);
+  const [kind, setKind] = React.useState<'rope' | 'chain'>('rope');
+  const [count, setCount] = React.useState(10);
+  const [segLength, setSegLength] = React.useState(0.4);
+  const [radius, setRadius] = React.useState(0.05);
+  const [top, setTop] = React.useState(5);
+  const [pinTop, setPinTop] = React.useState(true);
+  const [breakForce, setBreakForce] = React.useState(0);
+  const [templateId, setTemplateId] = React.useState('ball-rubber');
+
+  const build = () => {
+    const opts = {
+      name: kind === 'rope' ? 'Rope' : 'Chain',
+      count,
+      segLength,
+      radius,
+      position: [0, top, 0] as [number, number, number],
+      pinTop,
+      breakForce,
+      templateId,
+    };
+    const r = kind === 'rope' ? bakeRope(opts) : bakeChain(opts);
+    addObjects(r.objects);
+    addConstraints(r.joints);
+    addGenerator(r.record);
+  };
+
+  return (
+    <div className="forge-gen-form">
+      <h4>Rope / chain</h4>
+      <label className="forge-field">
+        <span className="forge-label">Kind</span>
+        <select
+          className="forge-select"
+          value={kind}
+          onChange={(e) => setKind(e.target.value as 'rope' | 'chain')}
+        >
+          <option value="rope">Rope (capsule links)</option>
+          <option value="chain">Chain (torus links)</option>
+        </select>
+      </label>
+      <label className="forge-field">
+        <span className="forge-label">Link material</span>
+        <select
+          className="forge-select"
+          value={templateId}
+          onChange={(e) => setTemplateId(e.target.value)}
+        >
+          {Object.keys(OBJECT_PRESETS).map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <NumField label="Links" value={count} onChange={setCount} min={2} max={200} />
+      <NumField label="Segment length" value={segLength} onChange={setSegLength} min={0.05} max={5} step={0.05} />
+      <NumField label="Link radius" value={radius} onChange={setRadius} min={0.01} max={1} step={0.01} />
+      <NumField label="Top height" value={top} onChange={setTop} min={0} max={50} step={0.5} />
+      <NumField label="Break force (0 ∞)" value={breakForce} onChange={setBreakForce} min={0} max={10000000} step={100} />
+      <label className="forge-check">
+        <input
+          type="checkbox"
+          checked={pinTop}
+          onChange={(e) => setPinTop(e.target.checked)}
+        />
+        Pin top (static anchor)
+      </label>
+      <button type="button" className="forge-btn primary" onClick={build}>
+        Build {kind === 'rope' ? 'rope' : 'chain'} ({count} links)
+      </button>
+      <p className="forge-hint">
+        Links are rigid bodies joined by ball joints — tune them in the
+        Inspector&apos;s Joints tab.
+      </p>
+    </div>
+  );
 }

@@ -58,13 +58,15 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 
 | Module | What it does | Honesty note |
 |---|---|---|
-| `runtime.ts` | Rapier world, fixed-step loop, snapshots, machines, wind/drag, pair response, spawn management | Rapier rigid-body only; soft/fluid are separate systems |
+| `runtime.ts` | Rapier world, fixed-step loop, snapshots, machines, wind/drag, pair response, spawn management, impulse joints (limits/motors/break) | Rapier rigid-body only; soft/fluid are separate systems |
 | `materials.ts` | 12 physical presets + pair-interaction matrix + auto-mass math | Pair matrix is a **v1 corrective-impulse approximation** on top of real Rapier combine rules |
 | `fields.ts` | Attractor/repulsor/vortex/wind/wave/turbulence/directional (pure force functions) | Real forces applied to dynamic bodies |
 | `pressure.ts` | Lumped-parameter vessels: leak, venting, reaction + radial forces | **Not CFD** — pressure as a real simulated variable |
 | `balloon.ts` | Puncture detector (tip touch / sharp impact / overpressure) + pop sequencing | Specialized system, reused via events for generic rupture |
 | `fracture.ts` | Chunk planner (grid/radial/random/voronoi-lite) | **Chunk-based**, not mesh-accurate Voronoi (roadmap) |
 | `generators.ts` | Grid/circle/spiral/tower/pile/domino bakers, seeded | Pure + deterministic; baked batches share instancing keys |
+| `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
+| `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
 | `emitters.ts` | Rate/burst/window/lifetime/maxAlive + oldest-recycle pooling | Deterministic spawn schedules |
 | `events.ts` | 8 triggers × 13 actions, one-shot per run | Engine-agnostic, unit-tested |
 | `cache.ts` | Keyframed snapshots + physics-hash invalidation | **Stale cache can never render**: hash mismatch drops everything |
@@ -76,6 +78,14 @@ so resting objects never break and presses still crush.
 Balloon pop rule: sharp tip (sharpness ≥ 0.5) within `radius + 0.08 m`
 pops on contact; sharp impacts ≥ 6 m/s slash-pop; pressure ≥ max bursts.
 
+Joint model: `fixed / distance / hinge / slider / spring / ball / rope`
+backed by real Rapier impulse joints (distance = stiff spring with a
+50 kN/m floor). Limits and velocity/position motors apply to hinge and
+slider; graphs rebuild when constraints change and after snapshot
+restore (recorded breaks are re-applied without re-firing effects).
+Break rule: stress proxy `σ = μ·|Δv|/dt` must exceed `breakForce` —
+v1 approximation, see §8.
+
 ## 5. Viewport (`three/`)
 
 - Shared geometry/material caches; generator batches render as
@@ -84,7 +94,8 @@ pops on contact; sharp impacts ≥ 6 m/s slash-pop; pressure ≥ max bursts.
 - Orbit/pan/zoom, transform gizmos with snapping, multi-select, focus,
   look-through-camera, follow targets, camera shake.
 - Debug overlays: colliders, velocity, contacts, centers of mass, sleeping
-  bodies, grid/axes, safe-area, live stats (fps/bodies/contacts/ms/draws).
+  bodies, **joints** (gold anchor-to-anchor links), grid/axes, safe-area,
+  live stats (fps/bodies/joints/contacts/ms/draws).
 - Effects: pop shrink animation, latex fragments (real bodies), GPU particle
   pool, shockwave rings, vent puffs, elastic squash for jelly-like materials.
 - `captureAt(w,h)` renders exact export resolution for frame PNGs/thumbs.
@@ -113,19 +124,25 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
 - Current limits (documented, not hidden): H.264 only (HEVC/VP9 live in
   the schema as future values; the pipe is H.264 — see §8), no alpha
   (yuv420p), silent unless `--audio` is passed.
+- Multi-seed batches: `render-forge-batch scene.forge.json --seeds 1-5
+  --out-dir out/ [--base-name clip]` renders one MP4 per seed
+  (`<base>-seed<seed>.mp4`), sequentially so Electron instances never
+  fight over the GPU encoder.
 
 ## 7. UI map (`ui/`)
 
 - `ForgeApp.tsx` — shell, runtime ownership, frame loop, shortcuts, export
   actions, safe-area + stats overlays.
-- `AssetBrowser.tsx` — preset browser + 5 procedural generators.
+- `AssetBrowser.tsx` — preset browser + 6 procedural generators (incl.
+  rope/chain builder).
 - `Inspector.tsx` — Basic/Advanced/Expert inspector; Object/World/Events/
-  Render tabs. **Every visible control is wired** — no decorative sliders.
+  Joints/Render tabs. **Every visible control is wired** — no decorative sliders.
 - `Timeline.tsx` — transport, deterministic scrub, record band, event
   markers, cache size.
 - `SceneLibrary.tsx` — cards with thumbnail/meta; open/duplicate/rename/
   export/delete; demo + 100/1k/5k/10k benchmark starters.
-- `sound.ts` — zero-asset WebAudio synth (pop/impact/crash/whoosh/blip).
+- `sound.ts` — zero-asset WebAudio synth
+  (pop/impact/crash/whoosh/blip/snap; snap = joint crack).
 
 ## 8. Known limits & roadmap (explicitly not faked)
 
@@ -138,8 +155,12 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
 - Codec selector beyond H.264, motion blur, and transparent-background
   export are planned; the Render tab marks quality/bitrate (real) vs codec
   (H.264 effective today).
-- Constraints UI (hinge/spring/rope) is schema-reserved but not yet
-  exposed — Rapier joints will back it (no fake sliders shipped).
+- Joints ship (Inspector Joints tab + rope builder) but joint breaking
+  uses a kinematic stress proxy, not solver reaction forces — thresholds
+  are comparative, not calibrated Newtons; per-v1 joints are invisible at
+  export resolution unless joint debug is on.
+- Rope links are rigid bodies, not a continuum — very long ropes stretch
+  slightly under load; increase solver iterations for crane-cable looks.
 
 ## 9. Extending
 

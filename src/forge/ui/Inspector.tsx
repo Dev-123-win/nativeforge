@@ -6,12 +6,13 @@ import React from 'react';
 import { useForge } from '../core/store';
 import type {
   ActionType,
+  ConstraintType,
   ForgeObject,
   TriggerType,
   UiLevel,
   Vec3,
 } from '../core/types';
-import { uid } from '../core/types';
+import { makeConstraint, uid } from '../core/types';
 import {
   autoMass,
   colliderVolume,
@@ -36,9 +37,12 @@ export interface RenderActions {
   downloadFrame: () => void;
 }
 
-type Tab = 'object' | 'world' | 'events' | 'render';
+type Tab = 'object' | 'world' | 'events' | 'joints' | 'render';
 
-export function Inspector(props: { renderActions: RenderActions }) {
+export function Inspector(props: {
+  renderActions: RenderActions;
+  brokenJoints: string[];
+}) {
   const selection = useForge((s) => s.selection);
   const uiLevel = useForge((s) => s.uiLevel);
   const setUiLevel = useForge((s) => s.setUiLevel);
@@ -59,7 +63,7 @@ export function Inspector(props: { renderActions: RenderActions }) {
         ))}
       </div>
       <div className="forge-inspector-tabs">
-        {(['object', 'world', 'events', 'render'] as Tab[]).map((t) => (
+        {(['object', 'world', 'events', 'joints', 'render'] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -74,6 +78,7 @@ export function Inspector(props: { renderActions: RenderActions }) {
         {tab === 'object' && <ObjectTab level={uiLevel} />}
         {tab === 'world' && <WorldTab level={uiLevel} />}
         {tab === 'events' && <EventsTab level={uiLevel} />}
+        {tab === 'joints' && <JointsTab level={uiLevel} broken={props.brokenJoints} />}
         {tab === 'render' && <RenderTab level={uiLevel} actions={props.renderActions} />}
       </div>
       {selection.length > 0 && tab === 'object' && <SelectionFooter />}
@@ -968,6 +973,172 @@ function RenderTab({ level, actions }: { level: UiLevel; actions: RenderActions 
           </div>
         ))}
       </Section>
+    </div>
+  );
+}
+
+
+/* ─── Joints tab ─────────────────────────────────────────────────────────── */
+
+const CONSTRAINT_TYPES: ConstraintType[] = [
+  'fixed', 'distance', 'hinge', 'slider', 'spring', 'ball', 'rope',
+];
+
+function JointsTab({ level, broken }: { level: UiLevel; broken: string[] }) {
+  const scene = useForge((s) => s.activeScene);
+  const selection = useForge((s) => s.selection);
+  const upsertConstraint = useForge((s) => s.upsertConstraint);
+  const removeConstraint = useForge((s) => s.removeConstraint);
+  const [linkType, setLinkType] = React.useState<ConstraintType>('distance');
+  if (!scene) return null;
+  const brokenSet = new Set(broken);
+  const objOptions = scene.objects.map((o) => ({
+    value: o.id, label: `${o.name} (${o.id.slice(-4)})`,
+  }));
+
+  const linkSelected = () => {
+    if (selection.length !== 2) return;
+    const [a, b] = selection
+      .map((id) => scene.objects.find((o) => o.id === id))
+      .filter((x): x is ForgeObject => !!x);
+    if (!a || !b) return;
+    const dx = a.transform.position[0] - b.transform.position[0];
+    const dy = a.transform.position[1] - b.transform.position[1];
+    const dz = a.transform.position[2] - b.transform.position[2];
+    const c = makeConstraint(`${a.name} ↔ ${b.name}`, linkType, a.id, b.id);
+    c.restLength = Math.max(0.05, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    upsertConstraint(c);
+  };
+
+  return (
+    <div>
+      <div className="forge-event-card">
+        <b style={{ fontSize: 12 }}>Link selected objects</b>
+        <Select label="Joint" value={linkType}
+          options={CONSTRAINT_TYPES}
+          onChange={(v) => setLinkType(v as ConstraintType)} />
+        <button
+          type="button"
+          className="forge-btn small primary"
+          disabled={selection.length !== 2}
+          onClick={linkSelected}
+          title={selection.length !== 2 ? 'Select exactly 2 objects in the viewport' : 'Create joint'}
+        >
+          {selection.length !== 2
+            ? `Select 2 objects (${selection.length}/2)`
+            : `Link as ${linkType}`}
+        </button>
+        <p className="forge-hint">
+          Anchors default to body centers — refine them below after linking.
+        </p>
+      </div>
+
+      {scene.constraints.length === 0 && (
+        <p className="forge-hint">
+          No joints yet. Ropes and chains from the left panel also appear here.
+        </p>
+      )}
+      {scene.constraints.map((c) => {
+        const isBroken = brokenSet.has(c.id);
+        return (
+          <div key={c.id} className="forge-event-card">
+            <div className="forge-event-head">
+              <input
+                type="text"
+                className="forge-text"
+                value={c.name}
+                onChange={(e) => upsertConstraint({ ...c, name: e.target.value })}
+              />
+              <button
+                type="button"
+                className="forge-btn small danger"
+                onClick={() => removeConstraint(c.id)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="forge-badges">
+              <span className="forge-badge">{c.type}</span>
+              {isBroken && <span className="forge-badge inst">broken — rewinds reset</span>}
+            </div>
+            <Toggle label="Enabled" checked={c.enabled}
+              onChange={(v) => upsertConstraint({ ...c, enabled: v })} />
+            <Select label="Type" value={c.type}
+              options={CONSTRAINT_TYPES}
+              onChange={(v) => upsertConstraint({ ...c, type: v as ConstraintType })} />
+            <Select label="Body A" value={c.bodyA}
+              options={objOptions}
+              onChange={(v) => upsertConstraint({ ...c, bodyA: v })} />
+            <Select label="Body B" value={c.bodyB}
+              options={objOptions}
+              onChange={(v) => upsertConstraint({ ...c, bodyB: v })} />
+            {visible('advanced', level) && (
+              <>
+                <Vec3Input label="Anchor A (local)" value={c.anchorA}
+                  onChange={(v) => upsertConstraint({ ...c, anchorA: v })} />
+                <Vec3Input label="Anchor B (local)" value={c.anchorB}
+                  onChange={(v) => upsertConstraint({ ...c, anchorB: v })} />
+              </>
+            )}
+            {(c.type === 'hinge' || c.type === 'slider') && (
+              <Vec3Input label="Axis (A local)" value={c.axis}
+                onChange={(v) => upsertConstraint({ ...c, axis: v })} />
+            )}
+            {(c.type === 'distance' || c.type === 'spring' || c.type === 'rope') && (
+              <Num label="Rest length" value={c.restLength} min={0.01} max={50} unit="m"
+                onChange={(v) => upsertConstraint({ ...c, restLength: v })} />
+            )}
+            {(c.type === 'spring' || c.type === 'distance') && visible('advanced', level) && (
+              <>
+                <Num label="Stiffness" value={c.stiffness} min={1} max={500000}
+                  onChange={(v) => upsertConstraint({ ...c, stiffness: v })} />
+                <Num label="Damping" value={c.damping} min={0} max={1000}
+                  onChange={(v) => upsertConstraint({ ...c, damping: v })} />
+              </>
+            )}
+            {(c.type === 'hinge' || c.type === 'slider') && visible('advanced', level) && (
+              <>
+                <Toggle label="Limits" checked={c.limitsEnabled}
+                  onChange={(v) => upsertConstraint({ ...c, limitsEnabled: v })} />
+                {c.limitsEnabled && (
+                  <>
+                    <Num label="Min" value={c.minLimit} min={-30} max={30}
+                      onChange={(v) => upsertConstraint({ ...c, minLimit: v })} />
+                    <Num label="Max" value={c.maxLimit} min={-30} max={30}
+                      onChange={(v) => upsertConstraint({ ...c, maxLimit: v })} />
+                  </>
+                )}
+              </>
+            )}
+            {(c.type === 'hinge' || c.type === 'slider') && visible('expert', level) && (
+              <>
+                <Toggle label="Motor" checked={c.motorEnabled}
+                  onChange={(v) => upsertConstraint({ ...c, motorEnabled: v })} />
+                {c.motorEnabled && (
+                  <>
+                    <Select label="Motor mode" value={c.motorMode}
+                      options={['velocity', 'position']}
+                      onChange={(v) => upsertConstraint({ ...c, motorMode: v as 'velocity' | 'position' })} />
+                    {c.motorMode === 'velocity' ? (
+                      <Num label="Speed" value={c.motorSpeed} min={-30} max={30}
+                        onChange={(v) => upsertConstraint({ ...c, motorSpeed: v })} />
+                    ) : (
+                      <Num label="Target" value={c.motorTarget} min={-30} max={30}
+                        onChange={(v) => upsertConstraint({ ...c, motorTarget: v })} />
+                    )}
+                    <Num label="Force" value={c.motorForce} min={0} max={100000}
+                      onChange={(v) => upsertConstraint({ ...c, motorForce: v })} />
+                  </>
+                )}
+              </>
+            )}
+            {visible('expert', level) && (
+              <Num label="Break force (0 ∞)" value={c.breakForce} min={0} max={10000000} unit="N"
+                onChange={(v) => upsertConstraint({ ...c, breakForce: v })} />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

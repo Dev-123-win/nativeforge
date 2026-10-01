@@ -101,6 +101,28 @@ export function playSynth(name: string, intensity = 1): void {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
     src.connect(f).connect(g).connect(c.destination);
     src.start(t);
+  } else if (name === 'snap') {
+    // Rope/joint crack: bright click + fast downward twang.
+    const src = c.createBufferSource();
+    src.buffer = noiseBuffer(c, 0.05);
+    const f = c.createBiquadFilter();
+    f.type = 'highpass';
+    f.frequency.value = 2500;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.6 * vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    src.connect(f).connect(g).connect(c.destination);
+    src.start(t);
+    const osc = c.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(900, t);
+    osc.frequency.exponentialRampToValueAtTime(180, t + 0.09);
+    const og = c.createGain();
+    og.gain.setValueAtTime(0.35 * vol, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    osc.connect(og).connect(c.destination);
+    osc.start(t);
+    osc.stop(t + 0.11);
   } else {
     // blip / click / default
     const osc = c.createOscillator();

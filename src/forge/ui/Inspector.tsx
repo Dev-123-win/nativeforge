@@ -1,6 +1,7 @@
 /**
  * Right panel — inspector with Basic / Advanced / Expert detail levels.
- * Tabs: Object · World · Events · Render. Every control is live-wired.
+ * Tabs: Object · World · Events · Joints · Director · Render.
+ * Every control is live-wired.
  */
 import React from 'react';
 import { useForge } from '../core/store';
@@ -8,6 +9,7 @@ import type {
   ActionType,
   CameraTrack,
   ConstraintType,
+  DriverTrack,
   EasingName,
   ForgeObject,
   MotorTrack,
@@ -19,6 +21,7 @@ import {
   EASING_NAMES,
   makeCameraTrack,
   makeConstraint,
+  makeDriverTrack,
   makeMotorTrack,
   uid,
 } from '../core/types';
@@ -46,9 +49,15 @@ export interface RenderActions {
   downloadFrame: () => void;
 }
 
+export interface DriverPoseCapture {
+  position: Vec3;
+  rotation: Vec3;
+}
+
 export interface DirectorActions {
   goToFrame: (f: number) => void;
   captureCamera: () => import('../render/director').CameraPose | null;
+  captureObjectPose: (objectId: string) => DriverPoseCapture | null;
 }
 
 type Tab = 'object' | 'world' | 'events' | 'joints' | 'director' | 'render';
@@ -1169,6 +1178,13 @@ function distinctFrames(t: CameraTrack): number[] {
   return [...frames].sort((a, b) => a - b);
 }
 
+function distinctDriverFrames(t: DriverTrack): number[] {
+  const frames = new Set<number>();
+  for (const k of t.position) frames.add(k.frame);
+  for (const k of t.rotation) frames.add(k.frame);
+  return [...frames].sort((a, b) => a - b);
+}
+
 function DirectorTab({ level, actions }: { level: UiLevel; actions: DirectorActions }) {
   const scene = useForge((s) => s.activeScene);
   const frame = useForge((s) => s.playback.frame);
@@ -1176,8 +1192,12 @@ function DirectorTab({ level, actions }: { level: UiLevel; actions: DirectorActi
   const removeCameraTrack = useForge((s) => s.removeCameraTrack);
   const upsertMotorTrack = useForge((s) => s.upsertMotorTrack);
   const removeMotorTrack = useForge((s) => s.removeMotorTrack);
+  const upsertDriverTrack = useForge((s) => s.upsertDriverTrack);
+  const removeDriverTrack = useForge((s) => s.removeDriverTrack);
+  const patchObject = useForge((s) => s.patchObject);
   const [motorJoint, setMotorJoint] = React.useState('');
   const [motorValue, setMotorValue] = React.useState(0);
+  const [driverObject, setDriverObject] = React.useState('');
   if (!scene) return null;
 
   const cam =
@@ -1503,6 +1523,206 @@ function DirectorTab({ level, actions }: { level: UiLevel; actions: DirectorActi
               <p className="forge-hint">
                 Keys drive {j?.motorMode === 'velocity' ? 'speed' : 'target position'} per
                 frame — deterministic, rewind-safe, and baked into export.
+              </p>
+            </div>
+          );
+        })}
+      </Section>
+
+      <Section title="Kinematic drivers" defaultOpen>
+        {scene.objects.length === 0 && (
+          <p className="forge-hint">
+            No objects yet — add a platform or paddle from the left panel
+            first.
+          </p>
+        )}
+        {scene.objects.length > 0 && (
+          <div className="forge-event-card">
+            <Select
+              label="Object"
+              value={driverObject}
+              options={scene.objects.map((o) => o.id)}
+              onChange={setDriverObject}
+            />
+            <button
+              type="button"
+              className="forge-btn small primary"
+              disabled={!driverObject}
+              onClick={() => {
+                const o = scene.objects.find((x) => x.id === driverObject);
+                if (!o) return;
+                upsertDriverTrack(makeDriverTrack(`${o.name} driver`, o.id));
+              }}
+            >
+              ＋ Driver track
+            </button>
+          </div>
+        )}
+        {scene.driverTracks.map((t) => {
+          const o = scene.objects.find((x) => x.id === t.objectId);
+          const isKinematic = o?.rigidBody?.bodyType === 'kinematic';
+          return (
+            <div key={t.id} className="forge-event-card">
+              <div className="forge-event-head">
+                <input
+                  type="text"
+                  className="forge-text"
+                  value={t.name}
+                  onChange={(e) =>
+                    upsertDriverTrack({ ...t, name: e.target.value })
+                  }
+                />
+                <button
+                  type="button"
+                  className="forge-btn small danger"
+                  onClick={() => removeDriverTrack(t.id)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="forge-badges">
+                <span className="forge-badge">{o ? o.name : 'object deleted'}</span>
+                {o && (
+                  <span className="forge-badge">
+                    {o.rigidBody?.bodyType ?? 'no body'}
+                  </span>
+                )}
+                {o && !isKinematic && (
+                  <span className="forge-badge inst">ignored — not kinematic</span>
+                )}
+              </div>
+              {o && !isKinematic && o.rigidBody && (
+                <button
+                  type="button"
+                  className="forge-btn small"
+                  onClick={() =>
+                    patchObject(o.id, {
+                      rigidBody: { ...o.rigidBody!, bodyType: 'kinematic' },
+                    })
+                  }
+                >
+                  Make kinematic
+                </button>
+              )}
+              <Toggle
+                label="Enabled"
+                checked={t.enabled}
+                onChange={(v) => upsertDriverTrack({ ...t, enabled: v })}
+              />
+              <button
+                type="button"
+                className="forge-btn small primary"
+                disabled={!o}
+                onClick={() => {
+                  const pose = actions.captureObjectPose(t.objectId);
+                  if (!pose) return;
+                  const drop = <K extends { frame: number }>(ks: K[]): K[] =>
+                    ks.filter((k) => k.frame !== frame);
+                  upsertDriverTrack({
+                    ...t,
+                    position: [
+                      ...drop(t.position),
+                      {
+                        frame,
+                        value: [...pose.position] as Vec3,
+                        easing: 'smooth' as EasingName,
+                      },
+                    ],
+                    rotation: [
+                      ...drop(t.rotation),
+                      {
+                        frame,
+                        value: [...pose.rotation] as Vec3,
+                        easing: 'smooth' as EasingName,
+                      },
+                    ],
+                  });
+                }}
+              >
+                ＋ Key @ f{frame} (capture live pose)
+              </button>
+              {distinctDriverFrames(t).map((f) => {
+                const easing =
+                  t.position.find((k) => k.frame === f)?.easing ?? 'smooth';
+                const pos = t.position.find((k) => k.frame === f);
+                const rot = t.rotation.find((k) => k.frame === f);
+                return (
+                  <div key={f} className="forge-key-row">
+                    <button
+                      type="button"
+                      className="forge-btn small"
+                      onClick={() => actions.goToFrame(f)}
+                      title="Jump to keyframe"
+                    >
+                      f{f}
+                    </button>
+                    <Select
+                      label=""
+                      value={easing}
+                      options={[...EASING_NAMES]}
+                      onChange={(v) => {
+                        const e = v as EasingName;
+                        const map = <K extends { frame: number; easing: EasingName }>(
+                          ks: K[],
+                        ): K[] =>
+                          ks.map((k) => (k.frame === f ? { ...k, easing: e } : k));
+                        upsertDriverTrack({
+                          ...t,
+                          position: map(t.position),
+                          rotation: map(t.rotation),
+                        });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="forge-btn small danger"
+                      onClick={() => {
+                        const drop = <K extends { frame: number }>(ks: K[]): K[] =>
+                          ks.filter((k) => k.frame !== f);
+                        upsertDriverTrack({
+                          ...t,
+                          position: drop(t.position),
+                          rotation: drop(t.rotation),
+                        });
+                      }}
+                    >
+                      ×
+                    </button>
+                    {visible('advanced', level) && pos && rot && (
+                      <div className="forge-key-values">
+                        <Vec3Input
+                          label="pos"
+                          value={pos.value}
+                          onChange={(v) =>
+                            upsertDriverTrack({
+                              ...t,
+                              position: t.position.map((k) =>
+                                k.frame === f ? { ...k, value: v } : k,
+                              ),
+                            })
+                          }
+                        />
+                        <Vec3Input
+                          label="rot"
+                          value={rot.value}
+                          onChange={(v) =>
+                            upsertDriverTrack({
+                              ...t,
+                              rotation: t.rotation.map((k) =>
+                                k.frame === f ? { ...k, value: v } : k,
+                              ),
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <p className="forge-hint">
+                The platform follows keys exactly and shoves dynamic bodies —
+                deterministic, rewind-safe, and baked into export. Gizmo edits
+                lose on the next frame while the track is enabled.
               </p>
             </div>
           );

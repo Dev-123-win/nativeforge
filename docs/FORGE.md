@@ -67,7 +67,7 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 | `generators.ts` | Grid/circle/spiral/tower/pile/domino bakers, seeded | Pure + deterministic; baked batches share instancing keys |
 | `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
 | `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
-| `render/director.ts` | Pure keyframe eval: camera poses + motor targets per frame | No I/O; scrub/replay/export evaluate identically |
+| `render/director.ts` | Pure keyframe eval: camera poses + motor targets + driver poses per frame | No I/O; scrub/replay/export evaluate identically |
 | `emitters.ts` | Rate/burst/window/lifetime/maxAlive + oldest-recycle pooling | Deterministic spawn schedules |
 | `events.ts` | 8 triggers × 13 actions, one-shot per run | Engine-agnostic, unit-tested |
 | `cache.ts` | Keyframed snapshots + physics-hash invalidation | **Stale cache can never render**: hash mismatch drops everything |
@@ -100,6 +100,11 @@ v1 approximation, see §8.
 - Director camera moves: an enabled track bound to the active camera
   drives position/target/fov per frame; applied only on frame change so
   orbiting while paused never fights the user.
+- Kinematic drivers: keyframed platforms/paddles push dynamic bodies
+  through real contact (friction carries riders, paddles shove balls).
+  Tracks apply only to kinematic bodies and hold during integration, so
+  the pose rendered AT frame F is eval(F-1) — uniform, deterministic,
+  one render-frame of curve lag.
 - Effects: pop shrink animation, latex fragments (real bodies), GPU particle
   pool, shockwave rings, vent puffs, elastic squash for jelly-like materials.
 - `captureAt(w,h)` renders exact export resolution for frame PNGs/thumbs.
@@ -143,8 +148,9 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   rope/chain builder).
 - `Inspector.tsx` — Basic/Advanced/Expert inspector; Object/World/Events/
   Joints/Director/Render tabs. **Every visible control is wired** — no decorative sliders.
-  The Director tab captures viewport poses as camera keys and edits motor
-  keys (Advanced reveals numeric channel values).
+  The Director tab captures viewport poses as camera keys, edits motor
+  keys, and captures live body poses as driver keys (Advanced reveals
+  numeric channel values).
 - `Timeline.tsx` — transport, deterministic scrub, record band, event
   markers, cache size.
 - `SceneLibrary.tsx` — cards with thumbnail/meta; open/duplicate/rename/
@@ -171,7 +177,9 @@ H.264 MP4 (libx264 / NVENC / VideoToolbox / QSV / AMF auto-detect)
   slightly under load; increase solver iterations for crane-cable looks.
 - Director v1: one effective camera track per camera (first enabled wins);
   motor tracks drive hinge/slider joints only and require the joint's own
-  motor to be enabled; keyframe lanes on the Timeline are future work.
+  motor to be enabled; driver tracks require kinematic bodies (one-click
+  convert in the UI); very fast drivers can tunnel through thin dynamics
+  (raise substeps); keyframe lanes on the Timeline are future work.
 
 ## 9. Extending
 

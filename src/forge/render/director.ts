@@ -8,6 +8,7 @@
 import type {
   CameraData,
   CameraTrack,
+  DriverTrack,
   EasingName,
   ForgeScene,
   MotorTrack,
@@ -126,6 +127,35 @@ export function activeCameraTrack(scene: ForgeScene): CameraTrack | null {
       (t) => t.enabled && t.cameraId === scene.activeCameraId,
     ) ?? null
   );
+}
+
+export interface DriverPose {
+  position: Vec3;
+  rotation: Vec3;
+}
+
+export interface DriverBase {
+  position: Vec3;
+  rotation: Vec3;
+}
+
+/**
+ * Full driver pose at a frame. Channels without keys fall back to the
+ * base (authored) transform. Null when disabled or entirely keyless.
+ */
+export function evalDriverTrack(
+  track: DriverTrack,
+  base: DriverBase,
+  frame: number,
+): DriverPose | null {
+  if (!track.enabled) return null;
+  if (track.position.length === 0 && track.rotation.length === 0) {
+    return null;
+  }
+  return {
+    position: evalVec3Keys(track.position, frame) ?? [...base.position] as Vec3,
+    rotation: evalVec3Keys(track.rotation, frame) ?? [...base.rotation] as Vec3,
+  };
 }
 
 /** Motor target/speed at a frame, or null when disabled/keyless. */

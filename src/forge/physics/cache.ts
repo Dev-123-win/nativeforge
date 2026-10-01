@@ -22,6 +22,9 @@ export function scenePhysicsHash(scene: ForgeScene): string {
   for (const t of scene.motorTracks ?? []) {
     s += `${t.id}${t.enabled ? 1 : 0}${t.jointId}${JSON.stringify(t.keys)};`;
   }
+  for (const t of scene.driverTracks ?? []) {
+    s += `${t.id}${t.enabled ? 1 : 0}${t.objectId}${JSON.stringify(t.position)}${JSON.stringify(t.rotation)};`;
+  }
   for (const j of scene.constraints ?? []) {
     s += `${j.id}${j.rev}${j.enabled ? 1 : 0}${j.type}${j.bodyA}${j.bodyB}${JSON.stringify(j.anchorA)}${JSON.stringify(j.anchorB)}${JSON.stringify(j.axis)}${j.restLength},${j.stiffness},${j.damping},${j.motorSpeed},${j.motorForce},${j.breakForce};`;
   }

@@ -487,6 +487,21 @@ export interface MotorTrack {
   keys: NumKey[];
 }
 
+/**
+ * Kinematic driver: keyframed position / rotation (euler XYZ radians)
+ * for one object. Applies only while the object is a kinematic body —
+ * dynamic bodies ignore their driver tracks. Included in the physics
+ * hash: moving platforms physically push dynamic bodies.
+ */
+export interface DriverTrack {
+  id: string;
+  name: string;
+  objectId: string;
+  enabled: boolean;
+  position: Vec3Key[];
+  rotation: Vec3Key[];
+}
+
 export interface ForgeScene {
   sceneId: string;
   schemaVersion: number;
@@ -503,6 +518,7 @@ export interface ForgeScene {
   constraints: ForgeConstraint[];
   cameraTracks: CameraTrack[];
   motorTracks: MotorTrack[];
+  driverTracks: DriverTrack[];
   assets: AssetRef[];
   render: RenderSettings;
   activeCameraId: string;
@@ -770,6 +786,17 @@ export function makeMotorTrack(name: string, jointId: string): MotorTrack {
   };
 }
 
+export function makeDriverTrack(name: string, objectId: string): DriverTrack {
+  return {
+    id: uid('drivetrack'),
+    name,
+    objectId,
+    enabled: true,
+    position: [],
+    rotation: [],
+  };
+}
+
 export function makeScene(name: string): ForgeScene {
   const now = Date.now();
   const cam: CameraData = {
@@ -823,6 +850,7 @@ export function makeScene(name: string): ForgeScene {
     constraints: [],
     cameraTracks: [],
     motorTracks: [],
+    driverTracks: [],
     assets: [],
     render: defaultRender(),
     activeCameraId: cam.id,
@@ -850,7 +878,7 @@ export function migrateScene(raw: unknown): ForgeScene {
   const withDefaults = scene as unknown as Record<string, unknown>;
   for (const key of [
     'objects', 'cameras', 'lights', 'events', 'generators',
-    'constraints', 'cameraTracks', 'motorTracks', 'assets',
+    'constraints', 'cameraTracks', 'motorTracks', 'driverTracks', 'assets',
   ]) {
     if (!Array.isArray(withDefaults[key])) withDefaults[key] = [];
   }
@@ -866,6 +894,12 @@ export function migrateScene(raw: unknown): ForgeScene {
   for (const t of scene.motorTracks as unknown as Array<Record<string, unknown>>) {
     if (typeof t['enabled'] !== 'boolean') t['enabled'] = true;
     if (!Array.isArray(t['keys'])) t['keys'] = [];
+  }
+  for (const t of scene.driverTracks as unknown as Array<Record<string, unknown>>) {
+    if (typeof t['enabled'] !== 'boolean') t['enabled'] = true;
+    for (const k of ['position', 'rotation']) {
+      if (!Array.isArray(t[k])) t[k] = [];
+    }
   }
   // v1 is current; future migrations chain here.
   return scene;

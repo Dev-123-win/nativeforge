@@ -10,6 +10,7 @@ import { create } from 'zustand';
 import type {
   CameraData,
   CameraTrack,
+  DriverTrack,
   ForgeConstraint,
   ForgeEvent,
   ForgeObject,
@@ -97,6 +98,8 @@ interface ForgeState {
   removeCameraTrack: (id: string) => void;
   upsertMotorTrack: (t: MotorTrack) => void;
   removeMotorTrack: (id: string) => void;
+  upsertDriverTrack: (t: DriverTrack) => void;
+  removeDriverTrack: (id: string) => void;
   addGenerator: (g: GeneratorRecord) => void;
   removeGenerator: (id: string) => void;
   setSeed: (seed: number) => void;
@@ -261,6 +264,10 @@ export const useForge = create<ForgeState>((set, get) => ({
       t.id = uid('motortrack');
       t.jointId = jointMap.get(t.jointId) ?? t.jointId;
     }
+    for (const t of scene.driverTracks) {
+      t.id = uid('drivetrack');
+      t.objectId = idMap.get(t.objectId) ?? t.objectId;
+    }
     for (const t of scene.cameraTracks) {
       t.id = uid('camtrack');
     }
@@ -391,6 +398,17 @@ export const useForge = create<ForgeState>((set, get) => ({
         objects: activeScene.objects.filter((o) => !doomed.has(o.id)),
         constraints: activeScene.constraints.filter(
           (c) => !doomed.has(c.bodyA) && !doomed.has(c.bodyB),
+        ),
+        motorTracks: activeScene.motorTracks.filter((t) =>
+          activeScene.constraints.some(
+            (c) =>
+              c.id === t.jointId &&
+              !doomed.has(c.bodyA) &&
+              !doomed.has(c.bodyB),
+          ),
+        ),
+        driverTracks: activeScene.driverTracks.filter(
+          (t) => !doomed.has(t.objectId),
         ),
         generators: activeScene.generators.map((g) => ({
           ...g,
@@ -672,6 +690,42 @@ export const useForge = create<ForgeState>((set, get) => ({
       activeScene: touchScene({
         ...activeScene,
         motorTracks: activeScene.motorTracks.filter((x) => x.id !== id),
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  upsertDriverTrack: (t) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    const sorted: DriverTrack = {
+      ...t,
+      position: [...t.position].sort((a, b) => a.frame - b.frame),
+      rotation: [...t.rotation].sort((a, b) => a.frame - b.frame),
+    };
+    const exists = activeScene.driverTracks.some((x) => x.id === t.id);
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        driverTracks: exists
+          ? activeScene.driverTracks.map((x) => (x.id === t.id ? sorted : x))
+          : [...activeScene.driverTracks, sorted],
+      }),
+      dirty: true,
+      simRevision: get().simRevision + 1,
+    });
+    scheduleAutosave();
+  },
+
+  removeDriverTrack: (id) => {
+    const { activeScene } = get();
+    if (!activeScene) return;
+    set({
+      activeScene: touchScene({
+        ...activeScene,
+        driverTracks: activeScene.driverTracks.filter((x) => x.id !== id),
       }),
       dirty: true,
       simRevision: get().simRevision + 1,

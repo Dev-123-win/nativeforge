@@ -7,7 +7,12 @@
  */
 import React from 'react';
 import { useForge } from '../core/store';
-import { PhysicsRuntime, type PhysicsStats, type RuntimeEventMsg } from '../physics/runtime';
+import {
+  PhysicsRuntime,
+  quatToEuler,
+  type PhysicsStats,
+  type RuntimeEventMsg,
+} from '../physics/runtime';
 import { ThreeRuntime, type ViewportStats } from '../three/runtime';
 import { templateProvider } from '../presets';
 import { activeCameraTrack, evalCameraTrack } from '../render/director';
@@ -330,6 +335,16 @@ function Editor({ onExit }: { onExit: () => void }) {
         });
       },
       captureCamera: () => threeRef.current?.getCameraPose() ?? null,
+      captureObjectPose: (objectId) => {
+        const t = physRef.current
+          ?.transforms()
+          .find((x) => x.id === objectId);
+        if (!t) return null;
+        return {
+          position: [...t.p] as [number, number, number],
+          rotation: quatToEuler(t.q),
+        };
+      },
     }),
     [],
   );

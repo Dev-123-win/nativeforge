@@ -38,7 +38,7 @@ import {
   type EventActions,
 } from './events';
 import { Rng } from '../core/rng';
-import { evalMotorTrack } from '../render/director';
+import { evalDriverTrack, evalMotorTrack } from '../render/director';
 import { SimCache, scenePhysicsHash } from './cache';
 
 let initPromise: Promise<void> | null = null;
@@ -63,6 +63,27 @@ export function eulerToQuat(e: Vec3): [number, number, number, number] {
     cx * cy * sz + sx * sy * cz,
     cx * cy * cz - sx * sy * sz,
   ];
+}
+
+/**
+ * Inverse of eulerToQuat (same XYZ convention): quaternion → euler.
+ * Used to capture live body poses as driver keys. Gimbal edge (|pitch|
+ * near π/2) pins roll to zero — same policy as three.js XYZ extraction.
+ */
+export function quatToEuler(q: [number, number, number, number]): Vec3 {
+  const [x, y, z, w] = q;
+  const m13 = 2 * (x * z + y * w);
+  const m11 = 1 - 2 * (y * y + z * z);
+  const m12 = 2 * (x * y - z * w);
+  const m23 = 2 * (y * z - x * w);
+  const m33 = 1 - 2 * (x * x + y * y);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, m13)));
+  if (Math.abs(m13) < 0.9999999) {
+    return [Math.atan2(-m23, m33), pitch, Math.atan2(-m12, m11)];
+  }
+  const m22 = 1 - 2 * (x * x + z * z);
+  const m32 = 2 * (y * z + x * w);
+  return [Math.atan2(m32, m22), pitch, 0];
 }
 
 function rotateByQuat(
@@ -935,6 +956,49 @@ export class PhysicsRuntime {
     }
   }
 
+  /**
+   * Per-frame kinematic drivers. Keyframed poses apply to live bodies
+   * only while they are kinematic position-based — dynamic bodies
+   * ignore their driver tracks. Pure function of frame, so scrub and
+   * replay stay deterministic.
+   */
+  private applyDriverTracks(): void {
+    const scene = this.scene;
+    if (!scene || !this.world || scene.driverTracks.length === 0) return;
+    for (const t of scene.driverTracks) {
+      if (!t.enabled) continue;
+      const built = this.bodies.get(t.objectId);
+      if (!built) continue;
+      try {
+        if (
+          built.body.bodyType() !== RAPIER.RigidBodyType.KinematicPositionBased
+        ) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      const pose = evalDriverTrack(
+        t,
+        {
+          position: built.def.transform.position,
+          rotation: built.def.transform.rotation,
+        },
+        this.frame,
+      );
+      if (!pose) continue;
+      const q = eulerToQuat(pose.rotation);
+      try {
+        built.body.setNextKinematicTranslation({
+          x: pose.position[0],
+          y: pose.position[1],
+          z: pose.position[2],
+        });
+        built.body.setNextKinematicRotation({ x: q[0], y: q[1], z: q[2], w: q[3] });
+      } catch { /* stale handle after restore — rebuilt next sync */ }
+    }
+  }
+
   /** Break a joint with effect hooks. */
   private breakJoint(id: string): void {
     const j = this.joints.get(id);
@@ -972,6 +1036,7 @@ export class PhysicsRuntime {
     this.frameCollisions = [];
     this.contactsDebug = [];
     this.applyMotorTracks();
+    this.applyDriverTracks();
 
     for (let s = 0; s < stepsPerFrame; s++) {
       for (let k = 0; k < sub; k++) {

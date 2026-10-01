@@ -65,6 +65,7 @@ events[], generators[], assets[] (refs), render{}, activeCameraId, thumbnail
 | `balloon.ts` | Puncture detector (tip touch / sharp impact / overpressure) + pop sequencing | Specialized system, reused via events for generic rupture |
 | `fracture.ts` | Chunk planner (grid/radial/random/voronoi-lite) + exact voronoi mode | Chunk modes approximate; voronoi tiles the bounds exactly |
 | `voronoi.ts` | 3D Voronoi shatter: bisector half-space clipping + Lloyd relax | N seeds → N cells, volume conserved, winding-free mass |
+| `fluid.ts` | WCSPH water in static box volumes: ghost walls, symmetric pressure, Monaghan α, XSPH, short-range contact | Real SPH; contained boxes only, 6000-particle cap, micro-voids ≈ 10% |
 | `generators.ts` | Grid/circle/spiral/tower/pile/domino bakers, seeded | Pure + deterministic; baked batches share instancing keys |
 | `rope.ts` | Rope/chain bakers: rigid links + ball joints + optional static pin | Deterministic; delete-safe via `generatedJoints` |
 | `render/batch.ts` | Pure seed-override / output-name / `--seeds` spec helpers | No I/O; CLI-tested |
@@ -89,6 +90,12 @@ restore (recorded breaks are re-applied without re-firing effects).
 Break rule: stress proxy `σ = μ·|Δv|/dt` must exceed `breakForce` —
 v1 approximation, see §8.
 
+Fluid rule: each volume seeds a jittered lattice (mass calibrated so the
+lattice reads exactly rest density); buoyancy on a body is the
+void-corrected submerged fraction × displaced water weight plus quadratic
+(Cd = 1) and linear drag. Wood (600 kg/m³) floats, steel sinks; a 2 m drop
+plunges ≈ 0.4 m before drag stops it (covered by tests).
+
 ## 5. Viewport (`three/`)
 
 - Shared geometry/material caches; generator batches render as
@@ -111,6 +118,10 @@ v1 approximation, see §8.
   pool, shockwave rings, vent puffs, elastic squash for jelly-like materials.
 - Spawned bodies (fragments, emitter products) carry a scale channel so
   visuals match their colliders; voronoi shards render as convex hulls.
+- SPH water renders as one `InstancedMesh` of spheres (per-particle color,
+  count-driven, no shadows for perf); each fluid volume shows a wireframe
+  region helper with a fill-level slab. Particles push per frame in the
+  editor and in export (`syncFluid`), so video shows the same water.
 - `captureAt(w,h)` renders exact export resolution for frame PNGs/thumbs.
 - Quality tiers are real: pixel-ratio + shadow scaling.
 
@@ -168,7 +179,7 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
   dot: enable). Drags quantize to integer frames and occupied frames
   block the drag so keys are never merged away.
 - `SceneLibrary.tsx` — cards with thumbnail/meta; open/duplicate/rename/
-  export/delete; demo + 100/1k/5k/10k benchmark starters.
+  export/delete; balloon + fluid demos + 100/1k/5k/10k benchmark starters.
 - `sound.ts` — zero-asset WebAudio synth
   (pop/impact/crash/whoosh/blip/snap; snap = joint crack).
 - `audio/sfx.ts` — offline port of those recipes to deterministic WAV
@@ -179,8 +190,12 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
 - Soft bodies: squash visuals + elastic params only; true FEM/XPBD planned
   as a pluggable backend (`Soft Body System` module boundary exists in the
   runtime's subsystem layout).
-- Fluids: buoyancy/drag/vessels only; SPH/FLIP planned behind the same
-  `PressureSystem`-style boundary.
+- Fluids v1 (shipped): static oriented-box volumes, SPH particles couple to
+  bodies one-way for dynamics (bodies feel buoyancy/drag, particles feel
+  collider push-out, particle momentum does not feed back into bodies);
+  non-box/sphere colliders use their bounding sphere for the fluid; ~10%
+  micro-voids remain (planned: particle shifting), so deep impact plunges
+  read slightly deep. FLIP / free-surface reconstruction planned.
 - Voronoi fracture tiles the object's axis-aligned bounds — exact for
   boxes, an AABB approximation for curved inputs; capped at 48 cells per
   break. Chunk modes remain for cheap bursts.
@@ -214,12 +229,13 @@ SFX post-step: .sfx.json sidecar → synth WAV → AAC mux (video stream copied)
 
 ## 10. Testing & benchmarks
 
-- `npm test` (vitest): 111 tests across 18 files — RNG, generators,
+- `npm test` (vitest): 130 tests across 19 files — RNG, generators,
   fracture (chunk + exact voronoi incl. volume conservation and
   end-to-end shatter determinism), balloon, joints, ropes, drivers,
   director eval, lanes, batch, schema, SFX synth, events, cache,
   isolation, materials, Rapier determinism, scrub-exactness,
-  **balloon-vs-cone burst integration**, fracture thresholds.
+  **balloon-vs-cone burst integration**, fracture thresholds, SPH fluids
+  (settle/viscosity/colliders/scrub + wood-floats/steel-sinks).
 - `npm run typecheck`, `vite build` must stay green.
 - Benchmarks: library starters generate 100 / 1k / 5k / 10k-ball scenes
   (seed 1337). Measure in the stats overlay: fps, physics ms, draw calls,

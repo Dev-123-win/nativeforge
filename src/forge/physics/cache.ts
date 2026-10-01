@@ -14,7 +14,7 @@ export function scenePhysicsHash(scene: ForgeScene): string {
   let s = `${scene.seed}|${w.gravity.join(',')}|${w.simFps}|${w.substeps}|${w.solverIterations}|${w.timeScale}|${w.airDensity}|${w.vacuum}|${w.wind.join(',')}|${w.turbulence}|`;
   const objs = [...scene.objects].sort((a, b) => (a.id < b.id ? -1 : 1));
   for (const o of objs) {
-    s += `${o.id},${o.kind},${o.rev},${JSON.stringify(o.transform)},${JSON.stringify(o.rigidBody)},${JSON.stringify(o.collider)},${JSON.stringify(o.constantForce)},${JSON.stringify(o.constantTorque)},${JSON.stringify(o.field)},${JSON.stringify(o.emitter)},${JSON.stringify(o.machine)},${JSON.stringify(o.pressure)},${JSON.stringify(o.balloon?.pressure)},${JSON.stringify(o.breakable?.enabled)};`;
+    s += `${o.id},${o.kind},${o.rev},${JSON.stringify(o.transform)},${JSON.stringify(o.rigidBody)},${JSON.stringify(o.collider)},${JSON.stringify(o.constantForce)},${JSON.stringify(o.constantTorque)},${JSON.stringify(o.field)},${JSON.stringify(o.emitter)},${JSON.stringify(o.machine)},${JSON.stringify(o.pressure)},${JSON.stringify(o.balloon?.pressure)},${JSON.stringify(o.breakable?.enabled)},${JSON.stringify(o.fluid)};`;
   }
   for (const e of scene.events) {
     s += `${e.id}${e.enabled ? 1 : 0}${JSON.stringify(e.trigger)}${JSON.stringify(e.action)};`;

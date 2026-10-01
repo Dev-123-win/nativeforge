@@ -5,7 +5,7 @@ import React from 'react';
 import { useForge } from '../core/store';
 import { saveScene } from '../core/db';
 import { retainSceneAssets } from '../core/assets';
-import { buildBalloonDemoScene, buildBenchmarkScene } from '../presets';
+import { buildBalloonDemoScene, buildBenchmarkScene, buildFluidDemoScene } from '../presets';
 
 export function SceneLibrary({ onExit }: { onExit: () => void }) {
   const summaries = useForge((s) => s.summaries);
@@ -22,10 +22,13 @@ export function SceneLibrary({ onExit }: { onExit: () => void }) {
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [busy, setBusy] = React.useState(false);
 
-  const addStarter = async (kind: 'demo' | 100 | 1000 | 5000 | 10000) => {
+  const addStarter = async (kind: 'demo' | 'fluid' | 100 | 1000 | 5000 | 10000) => {
     setBusy(true);
     try {
-      const scene = kind === 'demo' ? buildBalloonDemoScene() : buildBenchmarkScene(kind);
+      const scene =
+        kind === 'demo' ? buildBalloonDemoScene()
+        : kind === 'fluid' ? buildFluidDemoScene()
+        : buildBenchmarkScene(kind);
       await saveScene(scene);
       await retainSceneAssets(scene);
       await refreshLibrary();
@@ -99,6 +102,9 @@ export function SceneLibrary({ onExit }: { onExit: () => void }) {
         <span>Start from:</span>
         <button type="button" className="forge-btn small" disabled={busy} onClick={() => void addStarter('demo')}>
           🎈 Balloon vs Cone
+        </button>
+        <button type="button" className="forge-btn small" disabled={busy} onClick={() => void addStarter('fluid')}>
+          🌊 Float &amp; Sink
         </button>
         {([100, 1000, 5000, 10000] as const).map((n) => (
           <button key={n} type="button" className="forge-btn small" disabled={busy}

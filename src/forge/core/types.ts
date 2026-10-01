@@ -35,6 +35,7 @@ export type ObjectKind =
   | 'container'
   | 'light'
   | 'camera'
+  | 'fluid'
   | 'fragment';
 export type GeometryType =
   | 'sphere'
@@ -199,6 +200,30 @@ export interface BreakableData {
   fragmentScale: number;
 }
 
+/**
+ * SPH-lite fluid volume. The object's transform defines an oriented box
+ * region; particles seed inside up to `fill` of its height. Non-physical
+ * marker (rigidBody must be null) — the FluidSystem owns the particles.
+ */
+export interface FluidData {
+  enabled: boolean;
+  /** Rest distance between particles (m). Smaller = more, finer water. */
+  spacing: number;
+  /** Artistic viscosity 0..5 (water ≈ 0.4, honey ≈ 4). */
+  viscosity: number;
+  /** Pressure stiffness; higher = less compressible, less stable. */
+  stiffness: number;
+  /** Rest density kg/m³ (water 1000). Drives buoyancy. */
+  density: number;
+  color: string;
+  /** Fill fraction of the volume height 0..1. */
+  fill: number;
+  /** Per-volume particle budget. */
+  maxParticles: number;
+  /** No ceiling wall — splashes can escape upward (pools). */
+  openTop: boolean;
+}
+
 export interface EmitterData {
   shape: EmitterShape;
   enabled: boolean;
@@ -286,6 +311,7 @@ export interface ForgeObject {
   emitter: EmitterData | null;
   machine: MachineData | null;
   pressure: PressureData | null;
+  fluid: FluidData | null;
   /** Continuous force applied every step (N, world space) + torque (N·m). */
   constantForce: Vec3;
   constantTorque: Vec3;
@@ -637,6 +663,21 @@ export function defaultCollider(
   };
 }
 
+export function defaultFluid(overrides: Partial<FluidData> = {}): FluidData {
+  return {
+    enabled: true,
+    spacing: 0.22,
+    viscosity: 0.4,
+    stiffness: 200,
+    density: 1000,
+    color: '#2f7fff',
+    fill: 0.6,
+    maxParticles: 1500,
+    openTop: false,
+    ...overrides,
+  };
+}
+
 export function defaultVisual(
   overrides: Partial<VisualMaterialData> = {},
 ): VisualMaterialData {
@@ -726,9 +767,14 @@ export function makeObject(
     prefabId: null,
     geometry: { type: 'box', params: { width: 1, height: 1, depth: 1 } },
     transform: defaultTransform(),
-    rigidBody: kind === 'light' || kind === 'camera' ? null : defaultRigidBody(),
+    rigidBody:
+      kind === 'light' || kind === 'camera' || kind === 'fluid'
+        ? null
+        : defaultRigidBody(),
     collider:
-      kind === 'light' || kind === 'camera' ? null : defaultCollider(),
+      kind === 'light' || kind === 'camera' || kind === 'fluid'
+        ? null
+        : defaultCollider(),
     visual: defaultVisual(),
     physical: defaultPhysical(),
     field: null,
@@ -737,6 +783,7 @@ export function makeObject(
     emitter: null,
     machine: null,
     pressure: null,
+    fluid: null,
     constantForce: [0, 0, 0],
     constantTorque: [0, 0, 0],
     customVars: [],
@@ -912,6 +959,10 @@ export function migrateScene(raw: unknown): ForgeScene {
     for (const k of ['position', 'rotation']) {
       if (!Array.isArray(t[k])) t[k] = [];
     }
+  }
+  for (const o of scene.objects as unknown as Array<Record<string, unknown>>) {
+    if (!o || typeof o !== 'object') continue;
+    if (!('fluid' in o)) o['fluid'] = null;
   }
   // v1 is current; future migrations chain here.
   return scene;

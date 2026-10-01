@@ -182,6 +182,8 @@ function Editor({ onExit }: { onExit: () => void }) {
       const transforms = p.transforms();
       const map = new Map(transforms.map((t) => [t.id, t]));
       t3.applyTransforms(transforms, p.poppedIds(), p.fracturedIds());
+      const fs = p.fluidRenderState();
+      t3.syncFluid(fs.positions, fs.colors, fs.count, fs.radius);
       t3.syncSpawned(p.spawnedDescriptors(), p.drainRemovedSpawned(), map);
       t3.updateDebug(st.debug, p.contacts(), map);
       const cam = sc.cameras.find((c) => c.id === sc.activeCameraId);

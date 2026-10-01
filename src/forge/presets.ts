@@ -13,6 +13,7 @@ import type {
 } from './core/types';
 import {
   defaultCollider,
+  defaultFluid,
   defaultPhysical,
   defaultRigidBody,
   defaultVisual,
@@ -262,6 +263,27 @@ export const OBJECT_PRESETS: Record<string, () => ForgeObject> = {
     o.transform.position = [0, 1.25, 0];
     return o;
   },
+  'water-tank': () => {
+    const o = makeObject('Water Tank', 'fluid');
+    o.fluid = defaultFluid({ spacing: 0.25, fill: 0.6, maxParticles: 600 });
+    o.transform.position = [0, 1, 0];
+    o.transform.scale = [3, 2, 3];
+    return o;
+  },
+  'pool': () => {
+    const o = makeObject('Pool', 'fluid');
+    o.fluid = defaultFluid({ spacing: 0.25, fill: 0.7, maxParticles: 1500, openTop: true });
+    o.transform.position = [0, 0.6, 0];
+    o.transform.scale = [4, 1.2, 4];
+    return o;
+  },
+  'honey-tank': () => {
+    const o = makeObject('Honey Tank', 'fluid');
+    o.fluid = defaultFluid({ spacing: 0.22, viscosity: 4, color: '#e8a020', fill: 0.5, maxParticles: 1500 });
+    o.transform.position = [0, 1, 0];
+    o.transform.scale = [2, 2, 2];
+    return o;
+  },
   'tank-pressurized': () => {
     const o = base('Pressure Tank', 'container',
       { type: 'sphere', params: { radius: 0.6 } },
@@ -281,6 +303,7 @@ export const PRESET_CATEGORIES: Array<{ title: string; ids: string[] }> = [
   { title: 'Special', ids: ['balloon-red', 'glass-panel', 'crate-breakable', 'tank-pressurized'] },
   { title: 'Fields', ids: ['field-attractor', 'field-vortex', 'field-wind'] },
   { title: 'Machines', ids: ['press-machine', 'conveyor-machine', 'spinner-machine', 'emitter-default'] },
+  { title: 'Fluid', ids: ['water-tank', 'pool', 'honey-tank'] },
 ];
 
 /** Resolve an emitter/event template id to a fresh template object. */
@@ -360,6 +383,43 @@ export function buildBalloonDemoScene(): ForgeScene {
     trigger: { type: 'time', objectA: null, objectB: null, time: 1.6, threshold: 0, probability: 0 },
     action: { type: 'particles', targetId: balloon.id, vector: [0, 0, 0], scalar: 2, presetId: null },
   });
+  return scene;
+}
+
+/* ─── Demo scene: float & sink (fluid) ───────────────────────────────────── */
+
+export function buildFluidDemoScene(): ForgeScene {
+  const scene = makeScene('Float & Sink');
+  scene.seed = 4242;
+  scene.render = {
+    ...scene.render,
+    preset: 'landscape', width: 1920, height: 1080, fps: 60,
+    durationFrames: 480, recordStart: 0, recordEnd: 480,
+  };
+  const ground = OBJECT_PRESETS['ground']();
+  scene.objects.push(ground);
+  const tank = OBJECT_PRESETS['water-tank']();
+  scene.objects.push(tank);
+  const wood = OBJECT_PRESETS['box-wood']();
+  wood.transform.position = [-0.5, 3, 0];
+  wood.transform.scale = [0.6, 0.6, 0.6];
+  wood.rigidBody!.density = 600;
+  wood.physical.density = 600;
+  scene.objects.push(wood);
+  const steel = OBJECT_PRESETS['box-concrete']();
+  steel.name = 'Steel';
+  steel.transform.position = [0.5, 2, 0];
+  steel.transform.scale = [0.6, 0.6, 0.6];
+  steel.rigidBody!.density = 7800;
+  steel.physical.density = 7800;
+  scene.objects.push(steel);
+  scene.cameras[0] = {
+    ...scene.cameras[0],
+    name: 'Tank Cam',
+    position: [3.6, 2.8, 5.2],
+    target: [0, 0.9, 0],
+    fov: 50,
+  };
   return scene;
 }
 

@@ -40,6 +40,14 @@ import {
 import { Rng } from '../core/rng';
 import { evalDriverTrack, evalMotorTrack } from '../render/director';
 import { SimCache, scenePhysicsHash } from './cache';
+import {
+  FluidSystem,
+  bodyVolumeAndRadius,
+  hexToRgbFluid,
+  type FluidCollider,
+  type FluidSnapshot,
+  type FluidVolumeSeed,
+} from './fluid';
 
 let initPromise: Promise<void> | null = null;
 export function ensureRapier(): Promise<void> {
@@ -120,6 +128,55 @@ function combineRule(r: CombineRule): number {
 export interface SampledMesh {
   vertices: Float32Array;
   indices: Uint32Array;
+}
+
+/** Hamilton product q1 ⊗ q2 (applies q2 first). [x, y, z, w] order. */
+function mulQuat(
+  q1: [number, number, number, number],
+  q2: [number, number, number, number],
+): [number, number, number, number] {
+  return [
+    q1[3] * q2[0] + q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1],
+    q1[3] * q2[1] - q1[0] * q2[2] + q1[1] * q2[3] + q1[2] * q2[0],
+    q1[3] * q2[2] + q1[0] * q2[1] - q1[1] * q2[0] + q1[2] * q2[3],
+    q1[3] * q2[3] - q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2],
+  ];
+}
+
+/**
+ * Structural signature of the scene's fluid volumes: seed, id, pose, and
+ * every fluid parameter. Any change reseeds the particle lattice.
+ */
+function fluidSigOf(scene: ForgeScene): string {
+  const rows: string[] = [];
+  const objs = [...scene.objects].sort((a, b) => (a.id < b.id ? -1 : 1));
+  for (const o of objs) {
+    if (o.kind !== 'fluid' || !o.fluid) continue;
+    rows.push(
+      `${o.id}|${o.fluid.enabled ? 1 : 0}|${o.transform.position.join(',')}|` +
+        `${o.transform.rotation.join(',')}|${o.transform.scale.join(',')}|` +
+        `${o.fluid.spacing},${o.fluid.viscosity},${o.fluid.stiffness},` +
+        `${o.fluid.density},${o.fluid.color},${o.fluid.fill},` +
+        `${o.fluid.maxParticles},${o.fluid.openTop ? 1 : 0}`,
+    );
+  }
+  return `${scene.seed}::${rows.join(';')}`;
+}
+
+/** Broadphase: is a sphere at t with radius r near any fluid volume? */
+function nearFluid(
+  bounds: Array<{ center: Vec3; radius: number }>,
+  t: { x: number; y: number; z: number },
+  r: number,
+): boolean {
+  for (const b of bounds) {
+    const dx = t.x - b.center[0];
+    const dy = t.y - b.center[1];
+    const dz = t.z - b.center[2];
+    const reach = b.radius + r + 0.5;
+    if (dx * dx + dy * dy + dz * dz < reach * reach) return true;
+  }
+  return false;
 }
 
 export function sampleGeometryMesh(
@@ -266,6 +323,7 @@ export interface PhysicsStats {
   joints: number;
   brokenJoints: number;
   stepMs: number;
+  fluid: number;
 }
 
 export interface RuntimeOptions {
@@ -313,12 +371,14 @@ interface AuxState {
   }>;
   spawnedMeta: Array<[string, SpawnedDescriptor]>;
   removedSpawned: string[];
+  /** Null when the scene has no fluid volumes (skips the particle copy). */
+  fluid: FluidSnapshot | null;
 }
 
 const AUX_EMPTY: AuxState = {
   simTime: 0, spawnCounter: 0, popped: [], fractured: [],
   brokenJoints: [], fired: [], venting: [], emitters: [],
-  spawnedMeta: [], removedSpawned: [],
+  spawnedMeta: [], removedSpawned: [], fluid: null,
 };
 
 /* ─── Runtime ────────────────────────────────────────────────────────────── */
@@ -332,6 +392,8 @@ export class PhysicsRuntime {
   private pressure = new PressureSystem();
   private balloons = new BalloonSystem();
   private emitters = new Map<string, EmitterState>();
+  private fluid = new FluidSystem();
+  private fluidSig = '';
   private events: ForgeScene['events'] = [];
   private eventRng = new Rng(1);
   private cache = new SimCache(10, 120);
@@ -415,6 +477,7 @@ export class PhysicsRuntime {
       }
     }
     this.rebuildJoints();
+    this.reseedFluid();
     this.snapshotFrame(0);
   }
 
@@ -432,6 +495,13 @@ export class PhysicsRuntime {
       // Any physics edit invalidates future cache — never past keyframes we keep.
       this.cache.invalidate();
       this.auxByFrame.clear();
+    }
+    // Fluid volumes reseed (deterministic lattice) whenever their signature
+    // changes. Fluid params are part of the physics hash, so aux snapshots
+    // are already cleared above — reseed explicitly anyway for robustness.
+    if (fluidSigOf(scene) !== this.fluidSig) {
+      this.auxByFrame.clear();
+      this.reseedFluid();
     }
 
     // Gravity / solver live update (no rebuild needed).
@@ -1045,6 +1115,7 @@ export class PhysicsRuntime {
     this.contactsDebug = [];
     this.applyMotorTracks();
     this.applyDriverTracks();
+    this.stepFluid(dtFrame);
 
     for (let s = 0; s < stepsPerFrame; s++) {
       for (let k = 0; k < sub; k++) {
@@ -1097,6 +1168,7 @@ export class PhysicsRuntime {
         } catch { /* ignore */ }
       }
     }
+    this.applyBuoyancy();
 
     // Force fields.
     if (this.scene) {
@@ -1906,7 +1978,7 @@ export class PhysicsRuntime {
         elasticity: 0.9, hardness: 0.25, adhesion: 0.05,
       },
       field: null, balloon: null, breakable: null, emitter: null,
-      machine: null, pressure: null,
+      machine: null, pressure: null, fluid: null,
       constantForce: [0, 0, 0], constantTorque: [0, 0, 0], customVars: [],
     };
   }
@@ -1958,6 +2030,7 @@ export class PhysicsRuntime {
       })),
       spawnedMeta: [...this.spawnedMeta.entries()],
       removedSpawned: [...this.removedSpawned],
+      fluid: this.fluid.volumeCount > 0 ? this.fluid.snapshot() : null,
     };
   }
 
@@ -2020,6 +2093,10 @@ export class PhysicsRuntime {
       this.emitters.set(e.id, st);
     }
     this.removedSpawned = [...aux.removedSpawned];
+    // Fluid particles rewind with everything else. A null snapshot with live
+    // volumes (degenerate reset path) falls back to the seeded frame-0 state.
+    if (aux.fluid) this.fluid.restore(aux.fluid);
+    else if (this.fluid.volumeCount > 0) this.reseedFluid();
     this.activeContacts.clear();
     this.frameCollisions = [];
   }
@@ -2149,7 +2226,222 @@ export class PhysicsRuntime {
     }
     this.cache.validate(this.physicsHash);
     this.rebuildJoints();
+    this.reseedFluid();
     this.snapshotFrame(0);
+  }
+
+  /* ── Fluid (SPH-lite water) ── */
+
+  /**
+   * Rebuild fluid volume seeds from the scene and reseed the deterministic
+   * particle lattice. Called on load/reset and whenever the fluid signature
+   * changes (transform or param edit). Callers clear aux snapshots first.
+   */
+  private reseedFluid(): void {
+    if (!this.scene) return;
+    const defs: FluidVolumeSeed[] = [];
+    const objs = [...this.scene.objects].sort((a, b) =>
+      a.id < b.id ? -1 : 1,
+    );
+    for (const o of objs) {
+      if (o.kind !== 'fluid' || !o.fluid || !o.fluid.enabled) continue;
+      const s = o.transform.scale;
+      defs.push({
+        id: o.id,
+        center: [...o.transform.position] as Vec3,
+        quat: eulerToQuat(o.transform.rotation),
+        half: [
+          Math.abs(s[0]) / 2,
+          Math.abs(s[1]) / 2,
+          Math.abs(s[2]) / 2,
+        ],
+        spacing: o.fluid.spacing,
+        viscosity: o.fluid.viscosity,
+        stiffness: o.fluid.stiffness,
+        density: o.fluid.density,
+        color: hexToRgbFluid(o.fluid.color),
+        fill: o.fluid.fill,
+        maxParticles: o.fluid.maxParticles,
+        openTop: o.fluid.openTop,
+      });
+    }
+    this.fluid.seedVolumes(this.scene.seed, defs);
+    this.fluidSig = fluidSigOf(this.scene);
+  }
+
+  /**
+   * Advance the fluid one frame with analytic colliders gathered from live
+   * bodies. Runs BEFORE the Rapier substeps; buoyancy samples the result.
+   * Body motion reaches the fluid with one frame of lag (staggered coupling).
+   */
+  private stepFluid(dtFrame: number): void {
+    if (!this.scene) return;
+    if (this.fluid.count === 0 || this.fluid.volumeCount === 0) return;
+    this.fluid.step(
+      dtFrame,
+      this.scene.world.gravity,
+      this.gatherFluidColliders(),
+    );
+  }
+
+  /**
+   * Analytic box/sphere colliders for the fluid, broadphased against the
+   * volume bounds. Non-box/sphere colliders contribute their bounding sphere
+   * (documented v1 approximation). Sensors are ignored (no physical body).
+   */
+  private gatherFluidColliders(): FluidCollider[] {
+    const out: FluidCollider[] = [];
+    if (this.fluid.count === 0) return out;
+    const bounds = this.fluid.volumeBounds();
+    if (bounds.length === 0) return out;
+    for (const built of this.bodies.values()) {
+      const col = built.def.collider;
+      if (!col || !col.enabled || col.sensor) continue;
+      let t: { x: number; y: number; z: number };
+      let q: { x: number; y: number; z: number; w: number };
+      let lv = { x: 0, y: 0, z: 0 };
+      try {
+        t = built.body.translation();
+        q = built.body.rotation();
+        if (built.isDynamic) lv = built.body.linvel();
+      } catch {
+        continue;
+      }
+      const scale = built.def.transform.scale;
+      const { radius } = bodyVolumeAndRadius(col, scale);
+      if (!nearFluid(bounds, t, radius)) continue;
+      const off = rotateByQuat(col.offset, q);
+      const center: Vec3 = [t.x + off[0], t.y + off[1], t.z + off[2]];
+      // World orientation = body quat ⊗ collider-local rotation (mirrors
+      // makeColliderDesc's setTranslation/setRotation composition).
+      const quat = mulQuat(
+        [q.x, q.y, q.z, q.w],
+        eulerToQuat(col.rotation ?? [0, 0, 0]),
+      );
+      const velocity: Vec3 = [lv.x, lv.y, lv.z];
+      if (col.shape === 'box') {
+        out.push({
+          kind: 'box',
+          center,
+          quat,
+          halfExtents: [
+            Math.abs(col.halfExtents[0] * scale[0]),
+            Math.abs(col.halfExtents[1] * scale[1]),
+            Math.abs(col.halfExtents[2] * scale[2]),
+          ],
+          radius: 0,
+          velocity,
+          friction: col.friction,
+        });
+      } else if (col.shape === 'sphere') {
+        const m = Math.max(
+          Math.abs(scale[0]),
+          Math.abs(scale[1]),
+          Math.abs(scale[2]),
+        );
+        out.push({
+          kind: 'sphere',
+          center,
+          quat,
+          halfExtents: [0, 0, 0],
+          radius: col.radius * m,
+          velocity,
+          friction: col.friction,
+        });
+      } else {
+        // Capsule/cylinder/cone/convex/trimesh → bounding sphere.
+        out.push({
+          kind: 'sphere',
+          center,
+          quat,
+          halfExtents: [0, 0, 0],
+          radius,
+          velocity,
+          friction: col.friction,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Buoyancy + drag on dynamic bodies, applied every Rapier substep from the
+   * current particle distribution: F_buoy = −g·ρ·V·frac, plus quadratic and
+   * linear drag in the body-relative flow. Force acts at the center of mass
+   * (no righting torque in v1).
+   */
+  private applyBuoyancy(): void {
+    if (!this.world || !this.scene) return;
+    if (this.fluid.count === 0) return;
+    const bounds = this.fluid.volumeBounds();
+    if (bounds.length === 0) return;
+    const g = this.scene.world.gravity;
+    for (const built of this.bodies.values()) {
+      if (!built.isDynamic) continue;
+      const col = built.def.collider;
+      if (!col || !col.enabled || col.sensor) continue;
+      const { volume, radius, sample } = bodyVolumeAndRadius(
+        col,
+        built.def.transform.scale,
+      );
+      let t: { x: number; y: number; z: number };
+      let lv: { x: number; y: number; z: number };
+      try {
+        t = built.body.translation();
+        lv = built.body.linvel();
+      } catch {
+        continue;
+      }
+      if (!nearFluid(bounds, t, radius)) continue;
+      const s = this.fluid.sampleSubmersion([t.x, t.y, t.z], sample);
+      if (s.count === 0) continue;
+      // Void-corrected fraction: the sample shell holds water minus the
+      // body-sized void the push-out cleared (see bodyVolumeAndRadius). The
+      // 0.9 compensates the push-out margin + depletion layer, which make
+      // the true void slightly larger than the body volume.
+      const shellVol = Math.max(
+        1e-6,
+        ((4 / 3) * Math.PI * sample * sample * sample - volume) * 0.9,
+      );
+      const frac = Math.min(1, (s.count * s.pVol) / shellVol);
+      if (frac <= 0.001) continue;
+      const rhoV = s.density * volume * frac;
+      let fx = -g[0] * rhoV;
+      let fy = -g[1] * rhoV;
+      let fz = -g[2] * rhoV;
+      const rvx = lv.x - s.vel[0];
+      const rvy = lv.y - s.vel[1];
+      const rvz = lv.z - s.vel[2];
+      const spd = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
+      if (spd > 1e-6) {
+        const area = Math.pow(volume, 2 / 3);
+        const k =
+          0.5 * 1.0 * area * s.density * frac * spd + 0.8 * rhoV;
+        fx -= k * rvx;
+        fy -= k * rvy;
+        fz -= k * rvz;
+      }
+      try {
+        built.body.addForce({ x: fx, y: fy, z: fz }, true);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Live particle views for the renderer (valid until the next step). */
+  fluidRenderState(): {
+    positions: Float32Array;
+    colors: Float32Array;
+    count: number;
+    radius: number;
+  } {
+    return {
+      positions: this.fluid.positions(),
+      colors: this.fluid.colors(),
+      count: this.fluid.count,
+      radius: this.fluid.renderRadius(),
+    };
   }
 
   /* ── Readouts ── */
@@ -2204,6 +2496,7 @@ export class PhysicsRuntime {
       joints: this.joints.size,
       brokenJoints: this.brokenJoints.size,
       stepMs: this.stepMs,
+      fluid: this.fluid.count,
     };
   }
 }

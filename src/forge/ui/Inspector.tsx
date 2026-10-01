@@ -241,6 +241,7 @@ function ObjectTab({ level }: { level: UiLevel }) {
       {obj.collider && <BreakableSection obj={obj} patch={patch} level={level} />}
       {obj.emitter && <EmitterSection obj={obj} patch={patch} level={level} />}
       {obj.machine && <MachineSection obj={obj} patch={patch} level={level} />}
+      {obj.fluid && <FluidSection obj={obj} patch={patch} level={level} />}
       {obj.pressure && <PressureSection obj={obj} patch={patch} />}
       {visible('advanced', level) && <CustomVars obj={obj} patch={patch} />}
     </div>
@@ -543,6 +544,43 @@ function MachineSection({ obj, patch, level }: {
         onChange={(v) => set({ direction: v })} />
       <Num label="Start at" value={m.startTime} min={0} max={300} unit="s"
         onChange={(v) => set({ startTime: v })} />
+    </Section>
+  );
+}
+
+function FluidSection({ obj, patch, level }: {
+  obj: ForgeObject;
+  patch: (p: Partial<ForgeObject>) => void;
+  level: UiLevel;
+}) {
+  const f = obj.fluid!;
+  const set = (p: Partial<typeof f>) => patch({ fluid: { ...f, ...p } });
+  return (
+    <Section title="Fluid (SPH water)" defaultOpen>
+      <Toggle label="Enabled" checked={f.enabled} onChange={(v) => set({ enabled: v })} />
+      <Num label="Fill" value={f.fill} min={0} max={1}
+        onChange={(v) => set({ fill: v })} />
+      <ColorInput label="Color" value={f.color}
+        onChange={(v) => set({ color: v })} />
+      <Toggle label="Open top (pool)" checked={f.openTop} onChange={(v) => set({ openTop: v })} />
+      {visible('advanced', level) && (
+        <>
+          <Num label="Viscosity" value={f.viscosity} min={0} max={5}
+            onChange={(v) => set({ viscosity: v })} />
+          <Num label="Spacing" value={f.spacing} min={0.03} max={2} unit="m"
+            onChange={(v) => set({ spacing: v })} />
+          <Num label="Max particles" value={f.maxParticles} min={1} max={6000} step={1}
+            onChange={(v) => set({ maxParticles: Math.round(v) })} />
+        </>
+      )}
+      {visible('expert', level) && (
+        <>
+          <Num label="Stiffness" value={f.stiffness} min={1} max={2000} step={1}
+            onChange={(v) => set({ stiffness: v })} />
+          <Num label="Density" value={f.density} min={100} max={3000} step={10} unit="kg/m³"
+            onChange={(v) => set({ density: v })} />
+        </>
+      )}
     </Section>
   );
 }

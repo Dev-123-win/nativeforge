@@ -134,6 +134,8 @@ function renderFrame(sceneFrame: number, collect: boolean): void {
   const transforms = phys.transforms();
   const map = new Map(transforms.map((t) => [t.id, t]));
   view.applyTransforms(transforms, phys.poppedIds(), phys.fracturedIds());
+  const fs = phys.fluidRenderState();
+  view.syncFluid(fs.positions, fs.colors, fs.count, fs.radius);
   view.syncSpawned(phys.spawnedDescriptors(), phys.drainRemovedSpawned(), map);
   const cam = scene.cameras.find((c) => c.id === scene!.activeCameraId);
   const follow = cam?.followObjectId ? (map.get(cam.followObjectId) ?? null) : null;

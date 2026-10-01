@@ -11,8 +11,6 @@
  * - 45ms global min-gap throttle (the editor drops oversaturated hits)
  * - absolute gains like the live mix; a limiter only ever attenuates
  */
-import type { SynthName } from '../ui/sound';
-
 export const SFX_SAMPLE_RATE = 44100;
 export const SFX_MIN_GAP_SEC = 0.045;
 
@@ -228,13 +226,14 @@ function voiceBlip(c: VoiceCtx, freq: number): void {
 }
 
 function renderVoice(name: string, c: VoiceCtx): void {
-  const n = name as SynthName;
-  if (n === 'pop') voicePop(c);
-  else if (n === 'impact') voiceImpact(c);
-  else if (n === 'crash') voiceCrash(c);
-  else if (n === 'whoosh') voiceWhoosh(c);
-  else if (n === 'snap') voiceSnap(c);
-  else if (n === 'click') voiceBlip(c, 900);
+  // NOTE: compares raw strings (no import from ../ui/sound) so the node CLI
+  // typecheck never pulls DOM-typed WebAudio code into its program.
+  if (name === 'pop') voicePop(c);
+  else if (name === 'impact') voiceImpact(c);
+  else if (name === 'crash') voiceCrash(c);
+  else if (name === 'whoosh') voiceWhoosh(c);
+  else if (name === 'snap') voiceSnap(c);
+  else if (name === 'click') voiceBlip(c, 900);
   else voiceBlip(c, 620); // blip + unknown names, like the live synth
 }
 

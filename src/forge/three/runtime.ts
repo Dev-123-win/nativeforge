@@ -17,6 +17,7 @@ import type {
   Vec3,
 } from '../core/types';
 import type { BodyTransform, SpawnedDescriptor } from '../physics/runtime';
+import { FLUID_MAX_PARTICLES } from '../physics/fluid';
 import type { DebugFlags } from '../core/store';
 import type { CameraPose } from '../render/director';
 
@@ -171,6 +172,9 @@ export class ThreeRuntime {
     maxLife: Float32Array;
     count: number;
   };
+  /** SPH water pool: one instanced sphere per live particle, pushed per frame. */
+  private fluidMesh: THREE.InstancedMesh | null = null;
+  private fluidDummy = new THREE.Object3D();
   private shockwaves: Array<{ mesh: THREE.Mesh; t0: number }> = [];
   private popAnims = new Map<string, number>();
   private camSig = '';
@@ -293,6 +297,17 @@ export class ThreeRuntime {
     (pgeo.getAttribute('color') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     (pgeo.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
 
+    // Fluid pool (fixed capacity, count-driven; no shadows for perf).
+    const fgeo = new THREE.SphereGeometry(1, 10, 8);
+    const fmat = new THREE.MeshStandardMaterial({ roughness: 0.15, metalness: 0.0 });
+    this.fluidMesh = new THREE.InstancedMesh(fgeo, fmat, FLUID_MAX_PARTICLES);
+    this.fluidMesh.castShadow = false;
+    this.fluidMesh.receiveShadow = false;
+    this.fluidMesh.frustumCulled = false;
+    this.fluidMesh.count = 0;
+    this.fluidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.scene.add(this.fluidMesh);
+
     canvas.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('resize', this.onResize);
     this.onResize();
@@ -377,7 +392,7 @@ export class ThreeRuntime {
     const groups = new Map<string, ForgeObject[]>();
     const regular: ForgeObject[] = [];
     for (const o of scene.objects) {
-      if (o.kind === 'field' || o.kind === 'emitter') {
+      if (o.kind === 'field' || o.kind === 'emitter' || o.kind === 'fluid') {
         regular.push(o); // helper gizmos, not batched
       } else if (o.instanceKey) {
         const k = `${o.instanceKey}|${visualKey(o)}`;
@@ -481,6 +496,34 @@ export class ThreeRuntime {
     if (!def || def.locked) return false;
     if (def.instanceKey) return false; // batches move via physics, not gizmo
     return true;
+  }
+
+  /** Push fresh SPH particle state (called every frame, after transforms). */
+  syncFluid(
+    positions: Float32Array,
+    colors: Float32Array,
+    count: number,
+    radius: number,
+  ): void {
+    const mesh = this.fluidMesh;
+    if (!mesh) return;
+    const n = Math.max(0, Math.min(count, FLUID_MAX_PARTICLES));
+    mesh.visible = n > 0;
+    if (n === 0) {
+      mesh.count = 0;
+      return;
+    }
+    const d = this.fluidDummy;
+    for (let i = 0; i < n; i++) {
+      d.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+      d.scale.setScalar(Math.max(0.001, radius));
+      d.updateMatrix();
+      mesh.setMatrixAt(i, d.matrix);
+      mesh.setColorAt(i, tmpC.setRGB(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]));
+    }
+    mesh.count = n;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
   /** Push fresh physics transforms (called every frame). */
@@ -658,6 +701,7 @@ export class ThreeRuntime {
   private buildObjectMesh(o: ForgeObject): THREE.Object3D | null {
     if (o.kind === 'field') return this.buildFieldHelper(o);
     if (o.kind === 'emitter') return this.buildEmitterHelper(o);
+    if (o.kind === 'fluid') return this.buildFluidHelper(o);
     const geo = this.getGeometry(o.geometry);
     const mat = this.getMaterial(o);
     const mesh = new THREE.Mesh(geo, mat);
@@ -676,9 +720,12 @@ export class ThreeRuntime {
   }
 
   private updateObjectMesh(o: ForgeObject, mesh: THREE.Object3D): void {
-    if (o.kind === 'field' || o.kind === 'emitter') {
+    if (o.kind === 'field' || o.kind === 'emitter' || o.kind === 'fluid') {
       // Rebuild helpers cheaply on sync (they're small).
-      const fresh = o.kind === 'field' ? this.buildFieldHelper(o) : this.buildEmitterHelper(o);
+      const fresh =
+        o.kind === 'field' ? this.buildFieldHelper(o)
+        : o.kind === 'emitter' ? this.buildEmitterHelper(o)
+        : this.buildFluidHelper(o);
       if (fresh) {
         const idx = this.scene.children.indexOf(mesh);
         this.meshToId.delete(mesh.id);
@@ -740,6 +787,31 @@ export class ThreeRuntime {
     group.add(cone);
     group.position.set(...o.transform.position);
     group.quaternion.setFromEuler(new THREE.Euler(...o.transform.rotation));
+    return group;
+  }
+
+  private buildFluidHelper(o: ForgeObject): THREE.Object3D {
+    const group = new THREE.Group();
+    tmpC.set(o.fluid?.color ?? '#2f7fff');
+    const wire = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: tmpC.clone(), wireframe: true, transparent: true, opacity: 0.5 }),
+    );
+    group.add(wire);
+    // Fill-level slab: bottom-aligned, height = fill fraction.
+    const fill = Math.min(1, Math.max(0, o.fluid?.fill ?? 0.6));
+    if (fill > 0.001) {
+      const slab = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: tmpC.clone(), transparent: true, opacity: 0.16, depthWrite: false }),
+      );
+      slab.scale.set(1, fill, 1);
+      slab.position.y = -(1 - fill) / 2;
+      group.add(slab);
+    }
+    group.position.set(...o.transform.position);
+    group.quaternion.setFromEuler(new THREE.Euler(...o.transform.rotation));
+    group.scale.set(...o.transform.scale);
     return group;
   }
 
@@ -1206,6 +1278,12 @@ export class ThreeRuntime {
 
   dispose(): void {
     this.disposed = true;
+    if (this.fluidMesh) {
+      this.scene.remove(this.fluidMesh);
+      this.fluidMesh.geometry.dispose();
+      (this.fluidMesh.material as THREE.Material).dispose();
+      this.fluidMesh = null;
+    }
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('resize', this.onResize);
     this.controls.dispose();
